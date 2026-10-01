@@ -72,6 +72,10 @@ def apply_theme(name):
     .ncs-hero {{padding:18px 22px; border:1px solid {t['grid']}; border-radius:16px; background:linear-gradient(135deg,{t['panel']},{t['card']}); margin-bottom:18px;}}
     .ncs-kicker {{color:{t['accent']}; font-size:.78rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase;}}
     .ncs-sub {{color:{t['muted']}; margin-top:4px;}}
+    [data-testid="stHorizontalBlock"] {{flex-wrap:wrap;}}
+    [data-testid="column"] {{min-width:260px;}}
+    .stDataFrame, [data-testid="stDataEditor"] {{overflow-x:auto;}}
+    @media (max-width: 900px) {{ .ncs-hero {{padding:14px 16px;}} [data-testid="column"] {{min-width:100% !important;}} }}
     .ncs-notice {{margin-top:22px; padding:12px 14px; border:1px solid {t['grid']}; border-radius:12px; color:{t['muted']}; font-size:.82rem; background:{t['card']};}}
     </style>""", unsafe_allow_html=True)
 
@@ -79,7 +83,7 @@ with st.sidebar:
     theme_name=st.selectbox("Interface theme", list(THEMES), index=0, key="theme_name")
 apply_theme(theme_name)
 
-st.markdown("""<div class="ncs-hero"><div class="ncs-kicker">NCS project economics</div><h1 style="margin:.15rem 0 .2rem 0">NCS Economics Workbench V12.1</h1><div class="ncs-sub">Project economics · fiscal modelling · uncertainty · decision analysis</div></div>""", unsafe_allow_html=True)
+st.markdown("""<div class="ncs-hero"><div class="ncs-kicker">NCS project economics</div><h1 style="margin:.15rem 0 .2rem 0">NCS Economics Workbench V12.2 Audit Fix</h1><div class="ncs-sub">Project economics · fiscal modelling · uncertainty · decision analysis</div></div>""", unsafe_allow_html=True)
 
 years = list(range(2027, 2042))
 def default_profile():
@@ -93,23 +97,48 @@ def default_profile():
 if 'profile' not in st.session_state: st.session_state.profile = default_profile()
 if 'market_deck' not in st.session_state: st.session_state.market_deck = default_market_deck(years)
 
-tabs = st.tabs(['Dashboard','Production & costs','Economics','Scenarios','Uncertainty','Sensitivity & breakeven','Decision tree','Data / audit','Market & advanced','V9 decision studio','V10 analysis studio','Projects & reports','V11 exploration & portfolio','V12 integrated field development'])
+# Project imports are staged because Streamlit does not allow changing a widget's
+# state after that widget has already been instantiated in the same rerun.
+if '_pending_project_import' in st.session_state:
+    loaded=st.session_state.pop('_pending_project_import')
+    st.session_state.profile=pd.DataFrame(loaded['profile'])
+    if loaded.get('market_deck') is not None: st.session_state.market_deck=pd.DataFrame(loaded['market_deck'])
+    if loaded.get('scenarios') is not None: st.session_state.scenario_table=pd.DataFrame(loaded['scenarios'])
+    if loaded.get('decision_tree') is not None: st.session_state.decision_tree=loaded['decision_tree']
+    if loaded.get('concepts') is not None: st.session_state.concept_table=pd.DataFrame(loaded['concepts'])
+    st.session_state.snapshots=loaded.get('snapshots',[])
+    la=loaded.get('assumptions',{}); ls=loaded.get('settings',{})
+    amap={'oil_price_usd_bbl':'assump_oil','gas_price_usd_sm3':'assump_gas','usd_nok':'assump_fx','money_basis':'assump_money_basis','base_year':'assump_base_year','discount_rate_basis':'assump_rate_basis','tax_mode':'setting_fiscal_engine'}
+    for src,dst in amap.items():
+        if src in la: st.session_state[dst]=la[src]
+    if 'discount_rate' in la: st.session_state.assump_disc_pct=float(la['discount_rate'])*100
+    if 'general_inflation' in la: st.session_state.assump_inflation_pct=float(la['general_inflation'])*100
+    if 'oil_escalation' in la: st.session_state.assump_oil_esc_pct=float(la['oil_escalation'])*100
+    if 'gas_escalation' in la: st.session_state.assump_gas_esc_pct=float(la['gas_escalation'])*100
+    if 'cost_escalation' in la: st.session_state.assump_cost_esc_pct=float(la['cost_escalation'])*100
+    if 'time_resolution' in ls: st.session_state.setting_resolution=ls['time_resolution']
+    if 'capex_phasing' in ls: st.session_state.setting_capex_phasing=ls['capex_phasing']
+
+PAGES = ['Dashboard','Production & costs','Economics','Scenarios','Uncertainty','Sensitivity & breakeven','Decision tree','Data / audit','Market & advanced','V9 decision studio','V10 analysis studio','Projects & reports','V11 exploration & portfolio','V12 integrated field development']
+with st.sidebar:
+    st.subheader('Workspace')
+    page = st.selectbox('Module', PAGES, key='active_page')
 with st.sidebar:
     st.header('Case assumptions')
-    oil = st.number_input('Oil price (USD/bbl)', 0.0, 300.0, 75.0, 1.0)
-    gas = st.number_input('Gas price (USD/Sm³)', 0.0, 5.0, 0.35, .01)
-    fx = st.number_input('USD/NOK', 1.0, 30.0, 10.5, .1)
-    disc = st.number_input('Discount rate (%)', 0.0, 30.0, 8.0, .5)/100
+    oil = st.number_input('Oil price (USD/bbl)', 0.0, 300.0, 75.0, 1.0, key='assump_oil')
+    gas = st.number_input('Gas price (USD/Sm³)', 0.0, 5.0, 0.35, .01, key='assump_gas')
+    fx = st.number_input('USD/NOK', 1.0, 30.0, 10.5, .1, key='assump_fx')
+    disc = st.number_input('Discount rate (%)', 0.0, 30.0, 8.0, .5, key='assump_disc_pct')/100
     st.divider()
     st.subheader('Economic conventions')
-    money_basis = st.radio('Money basis', ['real','nominal'], horizontal=True)
-    base_year = st.number_input('Money / price base year', 2000, 2100, years[0], 1)
-    inflation = st.number_input('General inflation (%)', 0.0, 15.0, 2.5, .1)/100
-    rate_basis = st.radio('Entered discount rate is', ['real','nominal'], horizontal=True)
+    money_basis = st.radio('Money basis', ['real','nominal'], horizontal=True, key='assump_money_basis')
+    base_year = st.number_input('Money / price base year', 2000, 2100, years[0], 1, key='assump_base_year')
+    inflation = st.number_input('General inflation (%)', 0.0, 15.0, 2.5, .1, key='assump_inflation_pct')/100
+    rate_basis = st.radio('Entered discount rate is', ['real','nominal'], horizontal=True, key='assump_rate_basis')
     if money_basis == 'nominal':
-        oil_esc = st.number_input('Oil escalation (%)', -10.0, 20.0, 2.5, .1)/100
-        gas_esc = st.number_input('Gas escalation (%)', -10.0, 20.0, 2.5, .1)/100
-        cost_esc = st.number_input('Cost escalation (%)', -10.0, 20.0, 2.5, .1)/100
+        oil_esc = st.number_input('Oil escalation (%)', -10.0, 20.0, 2.5, .1, key='assump_oil_esc_pct')/100
+        gas_esc = st.number_input('Gas escalation (%)', -10.0, 20.0, 2.5, .1, key='assump_gas_esc_pct')/100
+        cost_esc = st.number_input('Cost escalation (%)', -10.0, 20.0, 2.5, .1, key='assump_cost_esc_pct')/100
     else:
         oil_esc = gas_esc = cost_esc = 0.0
     st.divider()
@@ -118,7 +147,7 @@ with st.sidebar:
     oil_unit = st.selectbox('Oil volume', ['MMbbl','kbbl','MSm3 oil','bbl'])
     gas_unit = st.selectbox('Gas volume', ['MSm3','BCM','MMboe','kSm3','Sm3'])
     st.caption('Canonical calculation units: MNOK, MMbbl and MSm³. Display conversions do not change economics.')
-    use_deck = st.toggle('Use annual market deck', value=True, help='Use editable annual oil, gas and FX curves instead of flat assumptions.')
+    use_deck = st.toggle('Use annual market deck', value=True, help='Use editable annual oil, gas and FX curves instead of flat assumptions.', key='setting_use_deck')
     st.divider()
     st.subheader('Economic cutoff')
     cutoff_mode=st.selectbox('Cutoff rule',['none','hard','negative_ocf','economic_limit'],format_func=lambda x:{'none':'None','hard':'Hard cutoff','negative_ocf':'Negative operating CF','economic_limit':'Economic limit / look-ahead'}[x])
@@ -130,9 +159,9 @@ with st.sidebar:
     decom_lag=st.number_input('Decommissioning lag (periods)',0,10,1,1)
     st.divider()
     st.subheader('V10 model resolution')
-    time_resolution=st.selectbox('Cash-flow resolution',['annual','quarterly','monthly'],format_func=str.title)
-    capex_phasing=st.selectbox('Subannual CAPEX phasing',['even','front'],format_func=lambda x:'Even' if x=='even' else 'Front-loaded')
-    fiscal_engine=st.selectbox('Fiscal engine',['ncs_v2','ncs_post_2022'],format_func=lambda x:'NCS fiscal V2' if x=='ncs_v2' else 'Legacy post-2022 baseline')
+    time_resolution=st.selectbox('Cash-flow resolution',['annual','quarterly','monthly'],format_func=str.title,key='setting_resolution')
+    capex_phasing=st.selectbox('Subannual CAPEX phasing',['even','front'],format_func=lambda x:'Even' if x=='even' else 'Front-loaded',key='setting_capex_phasing')
+    fiscal_engine=st.selectbox('Fiscal engine',['ncs_v2','ncs_post_2022'],format_func=lambda x:'NCS fiscal V2' if x=='ncs_v2' else 'Legacy post-2022 baseline',key='setting_fiscal_engine')
     st.info('Fiscal calculations remain an analytical project-level model; validate vintage/company-specific tax treatment before investment decisions.')
     st.markdown('<div class="ncs-notice"><b>Made by Merouane Hamdani</b><br>For educational purposes only — non-commercial.<br><br>Not investment, tax, legal, reserves, or engineering advice.</div>', unsafe_allow_html=True)
 
@@ -144,7 +173,26 @@ cf = calculate_cashflow(active_profile, a, active_deck, cutoff)
 m = metrics(cf)
 be = breakeven_oil_price(st.session_state.profile, a) if not use_deck else None
 
-with tabs[0]:
+# Lightweight shared scenario state. Keep this outside individual pages because
+# decision-tree, exports and audit views consume the same scenario economics.
+if 'scenario_table' not in st.session_state:
+    st.session_state.scenario_table = pd.DataFrame([
+        {'name':'Base','oil_factor':1.0,'gas_factor':1.0,'capex_factor':1.0,'opex_factor':1.0,'production_factor':1.0,'start_delay_years':0},
+        {'name':'High resource','oil_factor':1.0,'gas_factor':1.0,'capex_factor':1.05,'opex_factor':1.0,'production_factor':1.25,'start_delay_years':0},
+        {'name':'Low resource','oil_factor':1.0,'gas_factor':1.0,'capex_factor':0.95,'opex_factor':1.0,'production_factor':0.75,'start_delay_years':0},
+        {'name':'1-year delay','oil_factor':1.0,'gas_factor':1.0,'capex_factor':1.0,'opex_factor':1.0,'production_factor':1.0,'start_delay_years':1},
+    ])
+def current_scenarios():
+    out=[]
+    for row in st.session_state.scenario_table.to_dict('records'):
+        try: out.append(Scenario(**row))
+        except (TypeError, ValueError): pass
+    return out
+scenarios=current_scenarios()
+scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios)
+scenario_values=dict(zip(scenario_results['scenario'],scenario_results['npv_mnok'])) if not scenario_results.empty else {}
+
+if page == 'Dashboard':
     c1,c2,c3,c4=st.columns(4)
     mf=money_factor(money_unit)
     c1.metric('NPV', f"{m['npv_mnok']*mf:,.2f} {money_unit}")
@@ -160,10 +208,10 @@ with tabs[0]:
     prod=cf[['year','oil_mmbbl','gas_msm3']].copy(); prod['oil']=prod['oil_mmbbl']*oil_factor(oil_unit); prod['gas']=prod['gas_msm3']*gas_factor(gas_unit)
     st.plotly_chart(px.line(prod,x='year',y=['oil','gas'],markers=True,title=f'Production profile — oil {oil_unit}, gas {gas_unit}'),use_container_width=True)
 
-with tabs[1]:
+if page == 'Production & costs':
     st.subheader('Editable annual profile')
     st.session_state.profile = st.data_editor(st.session_state.profile, use_container_width=True, num_rows='dynamic', key='profile_editor')
-with tabs[2]:
+if page == 'Economics':
     st.subheader('Economic cash-flow table')
     econ=cf.copy()
     for col in [c for c in econ.columns if c.endswith('_mnok')]: econ[col]=econ[col]*money_factor(money_unit)
@@ -172,27 +220,18 @@ with tabs[2]:
     st.caption(f'Money shown in {money_unit}; oil in {oil_unit}; gas in {gas_unit}. Internal calculation basis remains MNOK / MMbbl / MSm³.')
     st.dataframe(econ.style.format(precision=2), use_container_width=True)
 
-with tabs[3]:
+if page == 'Scenarios':
     st.subheader('Scenario manager')
     st.caption('Scenario factors modify the current base profile and assumptions. Each scenario exposes an NPV that can be linked to a decision-tree outcome.')
-    if 'scenario_table' not in st.session_state:
-        st.session_state.scenario_table = pd.DataFrame([
-            {'name':'Base','oil_factor':1.0,'gas_factor':1.0,'capex_factor':1.0,'opex_factor':1.0,'production_factor':1.0,'start_delay_years':0},
-            {'name':'High resource','oil_factor':1.0,'gas_factor':1.0,'capex_factor':1.05,'opex_factor':1.0,'production_factor':1.25,'start_delay_years':0},
-            {'name':'Low resource','oil_factor':1.0,'gas_factor':1.0,'capex_factor':0.95,'opex_factor':1.0,'production_factor':0.75,'start_delay_years':0},
-            {'name':'1-year delay','oil_factor':1.0,'gas_factor':1.0,'capex_factor':1.0,'opex_factor':1.0,'production_factor':1.0,'start_delay_years':1},
-        ])
     st.session_state.scenario_table=st.data_editor(st.session_state.scenario_table,num_rows='dynamic',use_container_width=True,key='scenario_editor')
-    scenarios=[]
-    for r in st.session_state.scenario_table.to_dict('records'):
-        try: scenarios.append(Scenario(**r))
-        except TypeError: pass
+    scenarios=current_scenarios()
     scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios)
+    scenario_values=dict(zip(scenario_results['scenario'],scenario_results['npv_mnok'])) if not scenario_results.empty else {}
     st.dataframe(scenario_results,use_container_width=True,hide_index=True)
     if not scenario_results.empty:
         st.plotly_chart(px.bar(scenario_results,x='scenario',y='npv_mnok',title='Scenario NPV'),use_container_width=True)
 
-with tabs[4]:
+if page == 'Uncertainty':
     st.subheader('Monte Carlo uncertainty')
     st.caption('Choose marginal distributions and correlations. Correlated samples are generated with a Gaussian copula.')
     dists=['lognormal','normal','triangular']
@@ -208,15 +247,21 @@ with tabs[4]:
     resource_cost_corr=r3.slider('Production ↔ CAPEX correlation',-.9,.9,.15,.05)
     u=Uncertainty(oil_sig,gas_sig,cap_sig,op_sig,prod_sig,oil_dist,gas_dist,cap_dist,op_dist,prod_dist,price_corr,cost_corr,resource_cost_corr)
     iterations=st.slider('Iterations',500,10000,2000,500); seed=st.number_input('Random seed',0,999999,42)
-    samples,factors=run_monte_carlo(st.session_state.profile,a,u,iterations,int(seed),return_factors=True); st.session_state.mc_samples=samples; ms=mc_summary(samples)
-    x1,x2,x3,x4,x5=st.columns(5)
-    x1.metric('P10',f"{ms['P10']:,.0f} MNOK"); x2.metric('P50',f"{ms['P50']:,.0f} MNOK"); x3.metric('P90',f"{ms['P90']:,.0f} MNOK"); x4.metric('Mean',f"{ms['mean']:,.0f} MNOK"); x5.metric('P(NPV > 0)',f"{ms['prob_npv_positive']:.1%}")
-    st.plotly_chart(px.histogram(x=samples,nbins=60,labels={'x':'NPV (MNOK)'},title='NPV distribution'),use_container_width=True)
-    with st.expander('Correlation / sample diagnostics'):
-        st.write('Target factor correlation matrix'); st.dataframe(pd.DataFrame(correlation_matrix(u),index=['Oil','Gas','CAPEX','OPEX','Production'],columns=['Oil','Gas','CAPEX','OPEX','Production']))
-        st.write('Realized sampled-factor correlation'); st.dataframe(factors.corr())
+    if st.button('Run Monte Carlo', type='primary', key='run_mc'):
+        samples,factors=run_monte_carlo(st.session_state.profile,a,u,iterations,int(seed),return_factors=True)
+        st.session_state.mc_samples=samples; st.session_state.mc_factors=factors
+    if 'mc_samples' in st.session_state:
+        samples=st.session_state.mc_samples; factors=st.session_state.get('mc_factors'); ms=mc_summary(samples)
+        x1,x2,x3,x4,x5=st.columns(5)
+        x1.metric('P10',f"{ms['P10']:,.0f} MNOK"); x2.metric('P50',f"{ms['P50']:,.0f} MNOK"); x3.metric('P90',f"{ms['P90']:,.0f} MNOK"); x4.metric('Mean',f"{ms['mean']:,.0f} MNOK"); x5.metric('P(NPV > 0)',f"{ms['prob_npv_positive']:.1%}")
+        st.plotly_chart(px.histogram(x=samples,nbins=60,labels={'x':'NPV (MNOK)'},title='NPV distribution'),use_container_width=True)
+        with st.expander('Correlation / sample diagnostics'):
+            st.write('Target factor correlation matrix'); st.dataframe(pd.DataFrame(correlation_matrix(u),index=['Oil','Gas','CAPEX','OPEX','Production'],columns=['Oil','Gas','CAPEX','OPEX','Production']))
+            if factors is not None: st.write('Realized sampled-factor correlation'); st.dataframe(factors.corr())
+    else:
+        st.info('Set the uncertainty assumptions, then run Monte Carlo. Results are retained while you navigate between modules.')
 
-with tabs[5]:
+if page == 'Sensitivity & breakeven':
     st.subheader('Sensitivity, tornado & breakeven')
     tdf, base_npv = tornado(st.session_state.profile,a)
     fig=go.Figure()
@@ -259,9 +304,8 @@ with tabs[5]:
     st.plotly_chart(figw,use_container_width=True)
     st.caption('The bridge reconciles undiscounted revenue, costs and tax. NPV additionally reflects timing through discounting.')
 
-with tabs[6]:
+if page == 'Decision tree':
     st.subheader('Decision tree + scenario economics')
-    scenario_values=dict(zip(scenario_results['scenario'],scenario_results['npv_mnok'])) if not scenario_results.empty else {}
     default_tree={'nodes':[{'id':'n1','type':'decision','label':'Development concept','x':50,'y':220},{'id':'n2','type':'chance','label':'Resource outcome','x':300,'y':100},{'id':'n3','type':'outcome','label':'High','scenario_key':'High resource','value':0,'x':560,'y':40},{'id':'n4','type':'outcome','label':'Low','scenario_key':'Low resource','value':0,'x':560,'y':220},{'id':'n5','type':'outcome','label':'Base','scenario_key':'Base','value':0,'x':300,'y':390}], 'edges':[{'id':'e1','source':'n1','target':'n2','label':'Develop'},{'id':'e2','source':'n2','target':'n3','probability':0.35},{'id':'e3','source':'n2','target':'n4','probability':0.65},{'id':'e4','source':'n1','target':'n5','label':'Base'}]}
     if 'decision_tree' not in st.session_state: st.session_state.decision_tree=default_tree
     edited=decision_tree(st.session_state.decision_tree,scenario_values,key='economic_decision_tree')
@@ -276,21 +320,23 @@ with tabs[6]:
         st.json(st.session_state.decision_tree)
     st.markdown('**Decision-tree Monte Carlo**')
     tree_iterations=st.slider('Tree simulation iterations',250,5000,1000,250,key='tree_iterations')
+    tree_u=Uncertainty(.20,.20,.20,.15,.15,'lognormal','lognormal','lognormal','lognormal','lognormal',.35,.40,.15)
+    tree_seed=st.number_input('Tree random seed',0,999999,42,key='tree_seed')
     if st.button('Run decision-tree simulation',type='primary'):
-        tv,sv,tf=run_tree_monte_carlo(st.session_state.profile,a,scenarios,st.session_state.decision_tree,u,tree_iterations,int(seed))
+        tv,sv,tf=run_tree_monte_carlo(st.session_state.profile,a,scenarios,st.session_state.decision_tree,tree_u,tree_iterations,int(tree_seed))
         st.session_state.tree_mc=tv
     if 'tree_mc' in st.session_state:
         tms=mc_summary(st.session_state.tree_mc); z1,z2,z3,z4=st.columns(4)
         z1.metric('Tree P10',f"{tms['P10']:,.0f} MNOK"); z2.metric('Tree P50',f"{tms['P50']:,.0f} MNOK"); z3.metric('Tree P90',f"{tms['P90']:,.0f} MNOK"); z4.metric('P(value > 0)',f"{tms['prob_npv_positive']:.1%}")
         st.plotly_chart(px.histogram(x=st.session_state.tree_mc,nbins=50,labels={'x':'Decision-tree value (MNOK)'},title='Decision-tree value distribution'),use_container_width=True)
 
-with tabs[7]:
+if page == 'Data / audit':
     st.download_button('Download cash flow CSV',cf.to_csv(index=False),'cashflow.csv','text/csv')
     st.download_button('Download scenarios CSV',scenario_results.to_csv(index=False),'scenarios.csv','text/csv')
     st.json({'assumptions':a.__dict__,'display_units':{'money':money_unit,'oil':oil_unit,'gas':gas_unit},'effective_discount_rate':consistent_discount_rate(disc,rate_basis,money_basis,inflation),'metrics':m,'oil_breakeven_usd_bbl':be,'market_deck_enabled':use_deck,'scenario_npvs':scenario_values,'theme':theme_name,'attribution':{'author':'Merouane Hamdani','purpose':'Educational purposes only — non-commercial'}})
 
 
-with tabs[8]:
+if page == 'Market & advanced':
     st.subheader('Market decks & advanced analysis')
     st.caption('Edit annual oil, gas and FX assumptions. When “Use annual market deck” is enabled, these curves drive the core cash-flow calculation.')
     deck_issues=validate_market_deck(st.session_state.market_deck)
@@ -341,7 +387,7 @@ with tabs[8]:
     st.download_button('Download analysis workbook (.xlsx)',wb,'ncs_economics_analysis.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
-with tabs[9]:
+if page == 'V9 decision studio':
     st.subheader('V9 decision studio')
     st.caption('Cutoff-aware development concepts, generated production profiles, expanded breakevens, and value-of-information analysis.')
     st.markdown('### Production profile generator')
@@ -387,7 +433,7 @@ with tabs[9]:
     st.markdown('### Cutoff audit')
     st.json({'mode':cutoff.mode,'cessation_year':cf.attrs.get('cutoff_year'),'reason':cf.attrs.get('cutoff_reason'),'consecutive_negative_periods':cutoff.consecutive_negative_periods,'lookahead_periods':cutoff.lookahead_periods,'minimum_oil_mmbbl':cutoff.minimum_oil_mmbbl,'minimum_gas_msm3':cutoff.minimum_gas_msm3,'decommissioning_lag_periods':cutoff.decom_lag_periods})
 
-with tabs[10]:
+if page == 'V10 analysis studio':
     st.subheader('V10 analysis studio')
     st.caption('One workspace for timing, reserves, named decks, breakevens, concepts, uncertainty and fiscal diagnostics. All economics here use the selected cutoff rule.')
     r1,r2,r3,r4=st.columns(4)
@@ -421,7 +467,7 @@ with tabs[10]:
         if uc is not None: st.dataframe(uc.rename('NPV correlation').to_frame(),use_container_width=True)
     else: st.info('Run Monte Carlo first to populate downside and driver diagnostics.')
 
-with tabs[11]:
+if page == 'Projects & reports':
     st.subheader('Projects, versions & decision report')
     project_name=st.text_input('Project name','NCS Development Case')
     version_name=st.text_input('Snapshot version','V10.0')
@@ -432,16 +478,19 @@ with tabs[11]:
     st.download_button('Download version history (.json)',dumps_snapshots(st.session_state.snapshots),'project_versions.json','application/json')
     report=decision_report_text(project_name,m,cf.attrs.get('cutoff_year'),cf.attrs.get('cutoff_reason'),st.session_state.get('concept_table'))
     st.download_button('Download investment-decision summary (.md)',report,'investment_decision_summary.md','text/markdown')
-    project_bytes=dumps_project(st.session_state.profile,a,st.session_state.scenario_table,st.session_state.get('decision_tree',{}),{'author':'Merouane Hamdani','purpose':'Educational purposes only — non-commercial','app_version':'V12.1'},st.session_state.market_deck,st.session_state.get('concept_table'),{'time_resolution':time_resolution,'capex_phasing':capex_phasing,'cutoff':cutoff.__dict__},st.session_state.snapshots)
-    st.download_button('Save complete V12.1 project (.json)',project_bytes,'ncs_project_v12_1.json','application/json')
+    project_bytes=dumps_project(st.session_state.profile,a,st.session_state.scenario_table,st.session_state.get('decision_tree',{}),{'author':'Merouane Hamdani','purpose':'Educational purposes only — non-commercial','app_version':'V12.2-audit-fix'},st.session_state.market_deck,st.session_state.get('concept_table'),{'time_resolution':time_resolution,'capex_phasing':capex_phasing,'cutoff':cutoff.__dict__},st.session_state.snapshots)
+    st.download_button('Save complete V12.2 project (.json)',project_bytes,'ncs_project_v12_2.json','application/json')
     uploaded=st.file_uploader('Load V9/V10/V11/V11.1/V12/V12.1 project JSON',type=['json'])
     if uploaded is not None:
         try:
-            loaded=loads_project(uploaded); st.success(f"Project schema {loaded['schema_version']} loaded and validated. Apply/import controls can be extended without changing the schema.")
+            loaded=loads_project(uploaded); st.success(f"Project schema {loaded['schema_version']} validated.")
             st.json({'metadata':loaded.get('metadata',{}),'settings':loaded.get('settings',{}),'snapshots':loaded.get('snapshots',[])})
+            if st.button('Apply loaded project',type='primary',key='apply_loaded_project'):
+                st.session_state._pending_project_import=loaded
+                st.rerun()
         except Exception as e: st.error(f'Could not load project: {e}')
 
-with tabs[12]:
+if page == 'V11 exploration & portfolio':
     st.subheader('V11 exploration + development decision system')
     st.caption('Risk prospects, quantify schedule/commercial exposure, manage decision gates, screen constrained portfolios, and run model-assurance checks.')
     e1,e2=st.columns(2)
@@ -471,47 +520,112 @@ with tabs[12]:
     health=model_health(st.session_state.profile,active_deck,[.55,.45],{'cessation_year':cf.attrs.get('cutoff_year'),'decom_year':None},recoverable_oil_mmbbl=float(st.session_state.profile.oil_mmbbl.sum())*1.05,money_basis=money_basis,discount_basis=rate_basis)
     st.dataframe(pd.DataFrame(health),hide_index=True,use_container_width=True)
 
-with tabs[13]:
-    st.subheader('V12 integrated field development')
-    st.caption('Resources → wells → facilities → schedule → multi-currency costs → emissions → uncertainty → decisions → validation.')
-    v1,v2=st.columns(2)
-    with v1:
-        st.markdown('### Resources, wells & facilities')
-        stoiip=st.number_input('STOIIP (MMbbl)',0.0,5000.0,250.0,10.0,key='v12_stoiip')
-        rf=st.slider('Oil recovery factor',0.0,0.8,0.35,0.01,key='v12_rf')
-        nwell=st.number_input('Producer wells',1,30,6,1,key='v12_wells')
-        wellrate=st.number_input('Well deliverability (kbopd)',0.0,100.0,15.0,1.0,key='v12_wellrate')
-        facrate=st.number_input('Facility oil capacity (kbopd)',0.0,500.0,70.0,5.0,key='v12_fac')
-        well_list=[{'onstream_year':int(years[2]+i//2),'oil_kbopd':wellrate} for i in range(int(nwell))]
-        phys=integrated_profile(years,ResourceCase(stoiip,rf),well_list,FacilityLimits(oil_kbopd=facrate,uptime=.95))
-        rr=recoverable_resources(ResourceCase(stoiip,rf)); st.metric('Technical recoverable oil',f"{rr['oil_mmbbl']:,.1f} MMbbl")
-        st.metric('Remaining / stranded at horizon',f"{phys.remaining_oil_mmbbl.iloc[-1]:,.1f} MMbbl")
-        st.plotly_chart(px.area(phys,x='year',y=['oil_mmbbl','remaining_oil_mmbbl'],title='Integrated resource / production view'),use_container_width=True)
-    with v2:
-        st.markdown('### Emissions economics')
-        intensity=st.number_input('CO₂ intensity (kg/boe)',0.0,200.0,18.0,1.0,key='v12_co2')
-        carbon=st.number_input('Carbon price (NOK/t)',0.0,10000.0,1000.0,100.0,key='v12_carbon')
-        reduction=st.slider('Electrification reduction',0.0,1.0,0.0,.05,key='v12_elec')
-        em=emissions_economics(phys.rename(columns={'oil_mmbbl':'oil_mmbbl','gas_msm3':'gas_msm3'}),intensity,carbon,reduction)
-        st.metric('Lifecycle CO₂',f"{em.co2_tonnes.sum()/1e6:,.2f} Mt")
-        st.metric('Carbon cost',f"{em.carbon_cost_mnok.sum():,.0f} MNOK")
-        st.plotly_chart(px.bar(em,x='year',y='co2_tonnes',title='Annual CO₂ emissions'),use_container_width=True)
+if page == 'V12 integrated field development':
+    st.subheader('V12.2 integrated field development')
+    st.caption('Editable resources → wells → facilities → schedule → multi-currency costs → emissions → uncertainty → project-linked decisions → validation.')
+
+    c1,c2,c3,c4=st.columns(4)
+    stoiip=c1.number_input('STOIIP (MMbbl)',0.0,5000.0,250.0,10.0,key='v12_stoiip')
+    rf=c2.slider('Oil recovery factor',0.0,0.8,0.35,0.01,key='v12_rf')
+    facrate=c3.number_input('Facility oil capacity (kbopd)',0.0,500.0,70.0,5.0,key='v12_fac')
+    uptime=c4.slider('Facility uptime',0.10,1.0,0.95,0.01,key='v12_uptime')
+
+    if 'v12_well_table' not in st.session_state:
+        st.session_state.v12_well_table=pd.DataFrame([
+            {'name':f'P{i+1}','onstream_year':2029+i//2,'onstream_month':1 if i%2==0 else 7,'oil_kbopd':15.0,'gas_msm3_day':0.0}
+            for i in range(6)])
+    st.markdown('### Wells & physical constraints')
+    st.session_state.v12_well_table=st.data_editor(st.session_state.v12_well_table,num_rows='dynamic',use_container_width=True,key='v12_well_editor')
+    wells=[]
+    for r in st.session_state.v12_well_table.to_dict('records'):
+        try:
+            wells.append({'onstream_year':int(r['onstream_year']),'onstream_month':int(r.get('onstream_month',1)),'oil_kbopd':float(r.get('oil_kbopd',0)),'gas_msm3_day':float(r.get('gas_msm3_day',0))})
+        except (TypeError,ValueError,KeyError): pass
+    period_cols=[c for c in ['year','period','periods_per_year'] if c in active_profile.columns]
+    phys=integrated_profile(active_profile[period_cols],ResourceCase(stoiip,rf),wells,FacilityLimits(oil_kbopd=facrate,uptime=uptime))
+    rr=recoverable_resources(ResourceCase(stoiip,rf))
+    k1,k2,k3=st.columns(3); k1.metric('Technical recoverable oil',f"{rr['oil_mmbbl']:,.1f} MMbbl"); k2.metric('Produced in horizon',f"{phys.oil_mmbbl.sum():,.1f} MMbbl"); k3.metric('Remaining / stranded',f"{phys.remaining_oil_mmbbl.iloc[-1]:,.1f} MMbbl")
+    xaxis='period' if 'period' in phys.columns else 'year'
+    st.plotly_chart(px.line(phys,x=xaxis,y=['oil_mmbbl','well_oil_capacity_mmbbl','facility_oil_capacity_mmbbl'],title='Oil production and constraints'),use_container_width=True)
+    if st.button('Apply integrated production to project profile',key='v12_apply_physical'):
+        annual=phys.groupby('year',as_index=False)[['oil_mmbbl','gas_msm3']].sum()
+        base=st.session_state.profile.drop(columns=['oil_mmbbl','gas_msm3'],errors='ignore').merge(annual,on='year',how='left')
+        base[['oil_mmbbl','gas_msm3']]=base[['oil_mmbbl','gas_msm3']].fillna(0.0)
+        st.session_state.profile=base; st.success('Integrated physical production applied to the project profile.'); st.rerun()
+
+    st.markdown('### Emissions economics')
+    e1,e2,e3=st.columns(3); intensity=e1.number_input('CO₂ intensity (kg/boe)',0.0,200.0,18.0,1.0,key='v12_co2'); carbon=e2.number_input('Carbon price (NOK/t)',0.0,10000.0,1000.0,100.0,key='v12_carbon'); reduction=e3.slider('Electrification reduction',0.0,1.0,0.0,.05,key='v12_elec')
+    em=emissions_economics(phys,intensity,carbon,reduction)
+    q1,q2=st.columns(2); q1.metric('Lifecycle CO₂',f"{em.co2_tonnes.sum()/1e6:,.2f} Mt"); q2.metric('Carbon cost',f"{em.carbon_cost_mnok.sum():,.0f} MNOK")
+
     st.markdown('### Development schedule')
-    acts=[{'name':'FEED','start':2027.0,'end':2028.0},{'name':'FID','start':2028.0,'end':2028.25,'depends_on':['FEED']},{'name':'Facilities','start':2028.25,'end':2030.0,'depends_on':['FID'],'delay_low':0,'delay_mode':.1,'delay_high':.5},{'name':'Drilling','start':2028.25,'end':2030.0,'depends_on':['FID'],'delay_low':0,'delay_mode':.1,'delay_high':.4}]
-    sched=simulate_schedule(acts,500,42); st.dataframe(pd.DataFrame(acts),hide_index=True,use_container_width=True); st.caption(f"P50 simulated completion: {sched.first_oil.median():.2f}")
+    if 'v12_schedule_table' not in st.session_state:
+        st.session_state.v12_schedule_table=pd.DataFrame([
+            {'name':'FEED','start_year':2027.0,'duration_months':12.0,'depends_on':''},
+            {'name':'FID','start_year':2028.0,'duration_months':3.0,'depends_on':'FEED'},
+            {'name':'Facilities','start_year':2028.25,'duration_months':21.0,'depends_on':'FID'},
+            {'name':'Drilling','start_year':2028.25,'duration_months':21.0,'depends_on':'FID'}])
+    st.session_state.v12_schedule_table=st.data_editor(st.session_state.v12_schedule_table,num_rows='dynamic',use_container_width=True,key='v12_schedule_editor')
+    acts=[]
+    for r in st.session_state.v12_schedule_table.to_dict('records'):
+        try:
+            deps=[x.strip() for x in str(r.get('depends_on','')).split(',') if x.strip()]
+            acts.append({'name':str(r['name']),'start_month':float(r['start_year'])*12.0,'duration_months':float(r['duration_months']),'depends_on':deps})
+        except (TypeError,ValueError,KeyError): pass
+    sched_issues=validate_schedule(acts)
+    if sched_issues:
+        for issue in sched_issues: st.error(issue)
+    elif st.button('Run schedule simulation',key='v12_run_schedule'):
+        st.session_state.v12_schedule_samples=simulate_schedule(acts,1000,42)
+    if 'v12_schedule_samples' in st.session_state:
+        sched=st.session_state.v12_schedule_samples; st.caption(f"P50 simulated completion: {sched.first_oil.median():.2f}"); st.plotly_chart(px.histogram(sched,x='first_oil',nbins=30,title='Schedule completion distribution'),use_container_width=True)
+
     st.markdown('### Multi-currency cost breakdown')
-    fxdeck=pd.DataFrame({'year':[2028,2029,2030],'USD':[10.5,10.5,10.5],'EUR':[11.5,11.5,11.5],'GBP':[13.5,13.5,13.5]})
-    costlines=[{'year':2028,'category':'Wells','currency':'USD','amount':250e6},{'year':2029,'category':'Subsea/SURF','currency':'EUR','amount':300e6},{'year':2030,'category':'Host modifications','currency':'NOK','amount':2500e6}]
-    cfx=convert_cost_lines(costlines,fxdeck); st.dataframe(cfx[['year','category','currency','amount','fx_nok_per_unit','cost_mnok']],hide_index=True,use_container_width=True)
-    st.metric('Structured CAPEX',f"{cfx.cost_mnok.sum():,.0f} MNOK")
+    if 'v12_fxdeck' not in st.session_state: st.session_state.v12_fxdeck=pd.DataFrame({'year':[2028,2029,2030],'USD':[10.5]*3,'EUR':[11.5]*3,'GBP':[13.5]*3})
+    if 'v12_costlines' not in st.session_state: st.session_state.v12_costlines=pd.DataFrame([
+        {'year':2028,'category':'Wells','currency':'USD','amount':250e6},{'year':2029,'category':'Subsea/SURF','currency':'EUR','amount':300e6},{'year':2030,'category':'Host modifications','currency':'NOK','amount':2500e6}])
+    fxcol,costcol=st.columns(2)
+    with fxcol: st.caption('FX deck — NOK per currency unit'); st.session_state.v12_fxdeck=st.data_editor(st.session_state.v12_fxdeck,num_rows='dynamic',use_container_width=True,key='v12_fx_editor')
+    with costcol: st.caption('Cost lines'); st.session_state.v12_costlines=st.data_editor(st.session_state.v12_costlines,num_rows='dynamic',use_container_width=True,key='v12_cost_editor')
+    try:
+        cfx=convert_cost_lines(st.session_state.v12_costlines.to_dict('records'),st.session_state.v12_fxdeck); st.dataframe(cfx,use_container_width=True,hide_index=True); st.metric('Structured CAPEX',f"{cfx.cost_mnok.sum():,.0f} MNOK")
+    except Exception as exc: st.error(f'Cost/FX validation: {exc}'); cfx=pd.DataFrame()
+
     st.markdown('### Uncertainty register')
-    reg=[{'name':'STOIIP','distribution':'lognormal','median':stoiip,'sigma':.15},{'name':'Recovery factor','distribution':'triangular','low':max(0,rf-.08),'mode':rf,'high':min(1,rf+.08)},{'name':'Uptime','distribution':'uniform','low':.88,'high':.98}]
-    corr=np.eye(3); samples=sample_register(reg,1000,corr,42); st.dataframe(samples.describe().T, use_container_width=True)
-    st.markdown('### Calculation inspector')
-    idx=st.slider('Cash-flow row to inspect',0,max(len(cf)-1,0),0,key='v12_inspect')
-    st.json(inspect_period(cf,idx))
-    st.markdown('### Model validation gate')
-    checks=validate_model(st.session_state.profile,physical=phys,schedule=acts,register=reg,corr=corr,fx_deck=fxdeck)
+    if 'v12_register' not in st.session_state: st.session_state.v12_register=pd.DataFrame([
+        {'name':'STOIIP','distribution':'lognormal','median':stoiip,'sigma':.15,'low':np.nan,'mode':np.nan,'high':np.nan},
+        {'name':'Recovery factor','distribution':'triangular','median':np.nan,'sigma':np.nan,'low':max(0,rf-.08),'mode':rf,'high':min(1,rf+.08)},
+        {'name':'Uptime','distribution':'uniform','median':np.nan,'sigma':np.nan,'low':.88,'mode':np.nan,'high':.98}])
+    st.session_state.v12_register=st.data_editor(st.session_state.v12_register,num_rows='dynamic',use_container_width=True,key='v12_register_editor')
+    reg=[]
+    for r in st.session_state.v12_register.to_dict('records'):
+        reg.append({k:v for k,v in r.items() if not (isinstance(v,float) and np.isnan(v))})
+    corr=np.eye(len(reg))
+    reg_issues=validate_register(reg,corr)
+    if reg_issues:
+        for issue in reg_issues: st.error(issue)
+    elif st.button('Sample uncertainty register',key='v12_sample_register'):
+        st.session_state.v12_register_samples=sample_register(reg,2000,corr,42)
+    if 'v12_register_samples' in st.session_state: st.dataframe(st.session_state.v12_register_samples.describe().T,use_container_width=True)
+
+    st.markdown('### Project-linked decision states')
+    if 'v12_terminal_states' not in st.session_state: st.session_state.v12_terminal_states=pd.DataFrame([
+        {'state':'High resource','production_multiplier':1.20,'capex_multiplier':1.05,'opex_multiplier':1.0,'oil_price_multiplier':1.0,'gas_price_multiplier':1.0,'fx_multiplier':1.0,'delay_months':0.0},
+        {'state':'Low resource','production_multiplier':0.75,'capex_multiplier':0.95,'opex_multiplier':1.0,'oil_price_multiplier':1.0,'gas_price_multiplier':1.0,'fx_multiplier':1.0,'delay_months':0.0},
+        {'state':'Base','production_multiplier':1.0,'capex_multiplier':1.0,'opex_multiplier':1.0,'oil_price_multiplier':1.0,'gas_price_multiplier':1.0,'fx_multiplier':1.0,'delay_months':0.0}])
+    st.session_state.v12_terminal_states=st.data_editor(st.session_state.v12_terminal_states,num_rows='dynamic',use_container_width=True,key='v12_terminal_editor')
+    if st.button('Evaluate project-linked decision tree',key='v12_eval_tree'):
+        states={str(r.pop('state')):r for r in st.session_state.v12_terminal_states.to_dict('records') if r.get('state')}
+        if 'decision_tree' not in st.session_state: st.warning('Create or open the Decision tree module first.')
+        else:
+            try:
+                result,vals=evaluate_project_tree(st.session_state.decision_tree,active_profile,a,states,active_deck,cutoff); st.session_state.v12_project_tree_result={'result':result,'terminal_values':vals}
+            except Exception as exc: st.error(f'Project-linked tree error: {exc}')
+    if 'v12_project_tree_result' in st.session_state: st.json(st.session_state.v12_project_tree_result)
+
+    st.markdown('### Calculation inspector & validation gate')
+    idx=st.slider('Cash-flow row to inspect',0,max(len(cf)-1,0),0,key='v12_inspect'); st.json(inspect_period(cf,idx))
+    checks=validate_model(st.session_state.profile,physical=phys,schedule=acts,register=reg,corr=corr,fx_deck=st.session_state.v12_fxdeck)
     st.dataframe(pd.DataFrame(checks),hide_index=True,use_container_width=True)
     if has_errors(checks): st.error('Structural model errors detected. Resolve these before relying on uncertainty results.')
     else: st.success('No structural V12 validation errors detected.')

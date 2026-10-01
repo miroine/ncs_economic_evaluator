@@ -153,3 +153,19 @@ V12 adds resource/reserves balance, well deliverability and facility constraints
 - Development schedule durations/delays have explicit calendar-month semantics (legacy V12 decimal-year schedules remain readable).
 - Project-linked terminal-state delays accept `delay_months`; legacy `delay_years` maps to months. Economic flows are shifted by the calendar-equivalent number of model periods, so delay affects NPV rather than only year labels.
 - Cross-resolution regression tests cover leap-year/month lengths, volume conservation, schedule timing and decision-delay behavior.
+
+## V12.2 audit-fix release
+
+V12.2 is a user-facing reliability repair following a full V12.1 application audit.
+
+- Replaced the 14 eager Streamlit tabs with single-module navigation. Only the selected workspace executes, preventing hidden Monte Carlo, breakeven, schedule, uncertainty and export workloads from rerunning on every click.
+- Monte Carlo and V12 schedule/register simulations are explicit-run and their results persist in session state while navigating.
+- Project JSON loading now has a real Apply action and restores profile, market deck, scenarios, decision tree, concepts, snapshots, core assumptions, resolution and CAPEX phasing.
+- V12 wells, schedule, FX deck, cost lines, uncertainty register and project-linked terminal states are editable instead of hard-coded demonstrations.
+- Integrated physical production can be applied back to the project economics profile.
+- Decision-tree workspace now supports a scrollable canvas, zoom controls, Ctrl-wheel zoom, responsive toolbar and connector-dot drag connections.
+- Responsive CSS allows metric/input columns to wrap on narrower screens and keeps data editors horizontally scrollable.
+- Added UI-architecture regression tests in addition to the economics suite.
+
+### Verification note
+The release passes the Python compile check and automated test suite. The packaging environment used for this audit did not contain Streamlit and could not download packages, so a live browser launch was not available during packaging. Run `pip install -r requirements.txt` and `streamlit run app.py` in the deployment environment for the final browser/device acceptance test.
