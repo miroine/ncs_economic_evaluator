@@ -24,6 +24,7 @@ def apply_scenario(profile: pd.DataFrame, assumptions: Assumptions, scenario: Sc
     p['gas_msm3'] *= scenario.production_factor
     p['capex_mnok'] *= scenario.capex_factor
     p['opex_mnok'] *= scenario.opex_factor
+    p['decom_mnok'] *= scenario.capex_factor
     if scenario.start_delay_years:
         cols = ['oil_mmbbl','gas_msm3','capex_mnok','opex_mnok','decom_mnok']
         for c in cols:

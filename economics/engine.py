@@ -79,14 +79,67 @@ def metrics(df: pd.DataFrame):
     irr = (1+period_irr)**ppy-1 if np.isfinite(period_irr) and period_irr>-1 else period_irr
     cum = np.cumsum(cf)
     payback = (df.loc[np.where(cum >= 0)[0][0], 'period'] if 'period' in df.columns else df.loc[np.where(cum >= 0)[0][0], 'year']) if np.any(cum >= 0) else None
-    return {'npv_mnok': float(df['discounted_cf_mnok'].sum()), 'irr': float(irr) if np.isfinite(irr) else None, 'payback_year': payback}
+    after_tax_npv = float(df['discounted_cf_mnok'].sum())
+    pre_tax_npv = float((df['pre_tax_cf_mnok'] * df['discount_factor']).sum())
+    return {
+        'npv_mnok': after_tax_npv,
+        'after_tax_npv_mnok': after_tax_npv,
+        'pre_tax_npv_mnok': pre_tax_npv,
+        'irr': float(irr) if np.isfinite(irr) else None,
+        'payback_year': payback,
+    }
 
 
 def breakeven_oil_price(profile, assumptions, low=0.0, high=250.0, iterations=80, cutoff=None):
+    def value(price):
+        trial = Assumptions(**{**assumptions.__dict__, 'oil_price_usd_bbl': price})
+        return metrics(calculate_cashflow(profile, trial, cutoff=cutoff))['npv_mnok']
+
+    low_value = value(low)
+    if low_value == 0:
+        return low
+    if low_value > 0:
+        return low
+    high_value = value(high)
+    while high_value < 0 and high < 1_000_000:
+        high *= 2
+        high_value = value(high)
+    if high_value < 0:
+        return None
     for _ in range(iterations):
         mid = (low + high) / 2
-        trial = Assumptions(**{**assumptions.__dict__, 'oil_price_usd_bbl': mid})
-        npv = metrics(calculate_cashflow(profile, trial, cutoff=cutoff))['npv_mnok']
+        npv = value(mid)
         if npv >= 0: high = mid
         else: low = mid
     return (low + high) / 2
+
+
+def minimum_economic_volume(profile, assumptions, market_deck=None, cutoff=None, max_factor=1_000_000):
+    """Return the break-even hydrocarbon volume in MMboe, or None if no root exists."""
+    from .conventions import BOE_PER_SM3_GAS
+
+    base_volume = float(profile['oil_mmbbl'].sum() + profile['gas_msm3'].sum() * BOE_PER_SM3_GAS)
+    if not np.isfinite(base_volume) or base_volume <= 0:
+        return None
+
+    def value(factor):
+        trial_profile = profile.copy()
+        trial_profile[['oil_mmbbl', 'gas_msm3']] *= factor
+        return metrics(calculate_cashflow(trial_profile, assumptions, market_deck, cutoff))['npv_mnok']
+
+    low, high = 0.0, 1.0
+    low_value, high_value = value(low), value(high)
+    if low_value >= 0:
+        return 0.0
+    while high_value < 0 and high < max_factor:
+        high = min(high * 2, max_factor)
+        high_value = value(high)
+    if high_value < 0:
+        return None
+    for _ in range(80):
+        mid = (low + high) / 2
+        if value(mid) >= 0:
+            high = mid
+        else:
+            low = mid
+    return base_volume * (low + high) / 2

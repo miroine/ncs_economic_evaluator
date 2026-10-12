@@ -5,10 +5,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit as st
-from economics.engine import Assumptions, calculate_cashflow, metrics, breakeven_oil_price
+from economics.engine import Assumptions, calculate_cashflow, metrics, breakeven_oil_price, minimum_economic_volume
 from economics.analysis import tornado, sensitivity_curve, npv_waterfall
 from economics.market import default_market_deck, validate_market_deck
-from economics.advanced_analysis import spider, breakeven_table, exceedance_curve, tax_bridge, excel_workbook, breakeven_suite, extended_breakeven_suite
+from economics.advanced_analysis import spider, breakeven_table, breakeven_factor, exceedance_curve, tax_bridge, excel_workbook, breakeven_suite, extended_breakeven_suite
 from economics.conventions import money_factor, oil_factor, gas_factor, consistent_discount_rate
 from economics.decision_tree import evaluate_tree
 from economics.scenarios import Scenario, evaluate_scenarios
@@ -26,7 +26,7 @@ from economics.uncertainty_v2 import diagnostics as uncertainty_diagnostics
 from economics.fiscal_v2 import government_take
 from economics.reporting import decision_report_text
 from economics.portfolio import snapshot, dumps_snapshots
-from economics.project_io import dumps_project, loads_project
+from economics.project_io import dumps_project, loads_project, load_profile_table, validate_profile_table
 from economics.exploration import DiscoveryCase, prospect_emv, discovery_distribution
 from economics.commercial import phased_costs
 from economics.schedule_risk import simulate_schedule_risk, schedule_summary
@@ -101,7 +101,7 @@ if 'market_deck' not in st.session_state: st.session_state.market_deck = default
 # state after that widget has already been instantiated in the same rerun.
 if '_pending_project_import' in st.session_state:
     loaded=st.session_state.pop('_pending_project_import')
-    st.session_state.profile=pd.DataFrame(loaded['profile'])
+    st.session_state.profile=validate_profile_table(loaded['profile'])
     if loaded.get('market_deck') is not None: st.session_state.market_deck=pd.DataFrame(loaded['market_deck'])
     if loaded.get('scenarios') is not None: st.session_state.scenario_table=pd.DataFrame(loaded['scenarios'])
     if loaded.get('decision_tree') is not None: st.session_state.decision_tree=loaded['decision_tree']
@@ -172,6 +172,8 @@ active_profile = expand_profile(st.session_state.profile, time_resolution, capex
 cf = calculate_cashflow(active_profile, a, active_deck, cutoff)
 m = metrics(cf)
 be = breakeven_oil_price(st.session_state.profile, a, cutoff=cutoff) if not use_deck and page in ('Dashboard', 'Sensitivity & breakeven') else None
+deck_be = breakeven_factor(st.session_state.profile, a, 'Oil price', active_deck, cutoff=cutoff) if use_deck and page in ('Dashboard', 'Sensitivity & breakeven') else None
+mev = minimum_economic_volume(st.session_state.profile, a, active_deck, cutoff) if page == 'Dashboard' else None
 
 # Lightweight shared scenario state. Keep this outside individual pages because
 # decision-tree, exports and audit views consume the same scenario economics.
@@ -196,12 +198,14 @@ if page in ('Scenarios', 'Decision tree', 'Data / audit', 'Market & advanced', '
 scenario_values=dict(zip(scenario_results['scenario'],scenario_results['npv_mnok'])) if not scenario_results.empty else {}
 
 if page == 'Dashboard':
-    c1,c2,c3,c4=st.columns(4)
+    c1,c2,c3,c4,c5,c6=st.columns(6)
     mf=money_factor(money_unit)
-    c1.metric('NPV', f"{m['npv_mnok']*mf:,.2f} {money_unit}")
-    c2.metric('IRR', '—' if m['irr'] is None else f"{m['irr']:.1%}")
-    c3.metric('Oil breakeven', ('—' if be is None else f'${be:.1f}/bbl'))
-    c4.metric('Payback', m['payback_year'] or '—')
+    c1.metric('Pre-tax NPV', f"{m['pre_tax_npv_mnok']*mf:,.2f} {money_unit}")
+    c2.metric('After-tax NPV', f"{m['after_tax_npv_mnok']*mf:,.2f} {money_unit}")
+    c3.metric('IRR after tax', '—' if m['irr'] is None else f"{m['irr']:.1%}")
+    c4.metric('Oil breakeven', f'{deck_be:.3f}× deck' if use_deck and deck_be is not None else (f'${be:.1f}/bbl' if be is not None else '—'))
+    c5.metric('MEV', '—' if mev is None else f'{mev:,.2f} MMboe')
+    c6.metric('Payback', m['payback_year'] or '—')
     if cf.attrs.get('cutoff_year') is not None: st.info(f"Economic cessation: {cf.attrs.get('cutoff_year')} — {cf.attrs.get('cutoff_reason')}")
     st.caption(f"{money_basis.title()} money • entered {rate_basis} discount {disc:.2%} • effective {money_basis} discount {consistent_discount_rate(disc,rate_basis,money_basis,inflation):.2%}")
     chart_cf=cf[['year','pre_tax_cf_mnok','after_tax_cf_mnok']].copy(); chart_cf[['pre_tax_cf_mnok','after_tax_cf_mnok']]*=mf
@@ -212,14 +216,38 @@ if page == 'Dashboard':
     st.plotly_chart(px.line(prod,x='year',y=['oil','gas'],markers=True,title=f'Production profile — oil {oil_unit}, gas {gas_unit}'),use_container_width=True)
 
 if page == 'Production & costs':
-    st.subheader('Editable annual profile')
-    st.session_state.profile = st.data_editor(st.session_state.profile, use_container_width=True, num_rows='dynamic', key='profile_editor')
+    st.subheader('Production and cost profile')
+    st.caption('Manual profile values use canonical units: oil MMbbl, gas MSm³, and costs MNOK. Changes take effect only when applied.')
+    with st.form('profile_manual_form'):
+        edited_profile=st.data_editor(st.session_state.profile,use_container_width=True,num_rows='dynamic',key='profile_editor')
+        apply_manual=st.form_submit_button('Apply manual profile',type='primary')
+    if apply_manual:
+        try:
+            st.session_state.profile=validate_profile_table(edited_profile)
+            st.success('Manual profile applied.')
+        except (TypeError,ValueError) as exc:
+            st.error(f'Profile validation: {exc}')
+    uploaded_profile=st.file_uploader('Import profile from CSV or Excel',type=['csv','xlsx','xlsm'],key='profile_upload')
+    if uploaded_profile is not None:
+        try:
+            imported_profile=load_profile_table(uploaded_profile.getvalue(),uploaded_profile.name)
+            st.dataframe(imported_profile,use_container_width=True,hide_index=True)
+            if st.button('Apply imported profile',type='primary',key='apply_profile_import'):
+                st.session_state.profile=imported_profile
+                st.success('Imported profile applied.')
+                st.rerun()
+        except (TypeError,ValueError,ImportError) as exc:
+            st.error(f'Could not import profile: {exc}')
+    template=st.session_state.profile.iloc[:0].to_csv(index=False)
+    st.download_button('Download profile CSV template',template,'profile_template.csv','text/csv')
 if page == 'Economics':
     st.subheader('Economic cash-flow table')
     econ=cf.copy()
     for col in [c for c in econ.columns if c.endswith('_mnok')]: econ[col]=econ[col]*money_factor(money_unit)
     econ=econ.rename(columns={c:c.replace('_mnok',f'_{money_unit.lower()}') for c in econ.columns if c.endswith('_mnok')})
-    econ['oil_display']=econ['oil_mmbbl']*oil_factor(oil_unit); econ['gas_display']=econ['gas_msm3']*gas_factor(gas_unit)
+    econ=econ.drop(columns=['oil_mmbbl','gas_msm3'],errors='ignore')
+    econ[f'oil_volume ({oil_unit})']=cf['oil_mmbbl']*oil_factor(oil_unit)
+    econ[f'gas_volume ({gas_unit})']=cf['gas_msm3']*gas_factor(gas_unit)
     st.caption(f'Money shown in {money_unit}; oil in {oil_unit}; gas in {gas_unit}. Internal calculation basis remains MNOK / MMbbl / MSm³.')
     st.dataframe(econ.style.format(precision=2), use_container_width=True)
 
@@ -283,22 +311,25 @@ if page == 'Sensitivity & breakeven':
         st.plotly_chart(figc,use_container_width=True)
     with c2:
         if use_deck:
-            deck_be=breakeven_table(st.session_state.profile,a,active_deck)
-            oil_row=deck_be[deck_be['variable']=='Oil price'].iloc[0]
+            deck_table=breakeven_table(st.session_state.profile,a,active_deck,cutoff=cutoff)
+            oil_row=deck_table[deck_table['variable']=='Oil price'].iloc[0]
             if pd.isna(oil_row['breakeven_factor']): st.metric('Oil-deck breakeven','Outside search range')
             else: st.metric('Oil-deck breakeven',f"{oil_row['breakeven_factor']:.3f}× ({oil_row['breakeven_change_pct']:+.1f}%)")
             st.caption('With a market deck enabled, breakeven is a uniform multiplier applied to every annual oil-price point.')
         else:
-            st.metric('Oil-price breakeven',f'${be:,.2f}/bbl')
-            prices=np.linspace(max(0,be*.45),max(be*1.65,oil*1.4,20),31)
-            rows=[]
-            for price in prices:
-                aa=Assumptions(**{**a.__dict__,'oil_price_usd_bbl':float(price)})
-                rows.append({'oil_price':price,'npv':metrics(calculate_cashflow(st.session_state.profile,aa,cutoff=cutoff))['npv_mnok']*money_factor(money_unit)})
-            bedf=pd.DataFrame(rows)
-            figb=px.line(bedf,x='oil_price',y='npv',title='Oil-price breakeven curve')
-            figb.add_hline(y=0,line_dash='dash'); figb.add_vline(x=be,line_dash='dash'); figb.update_xaxes(title='Oil price (USD/bbl)'); figb.update_yaxes(title=f'NPV ({money_unit})')
-            st.plotly_chart(figb,use_container_width=True)
+            st.metric('Oil-price breakeven','Outside search range' if be is None else f'${be:,.2f}/bbl')
+            if be is not None:
+                prices=np.linspace(max(0,be*.45),max(be*1.65,oil*1.4,20),31)
+                rows=[]
+                for price in prices:
+                    aa=Assumptions(**{**a.__dict__,'oil_price_usd_bbl':float(price)})
+                    rows.append({'oil_price':price,'npv':metrics(calculate_cashflow(st.session_state.profile,aa,cutoff=cutoff))['npv_mnok']*money_factor(money_unit)})
+                bedf=pd.DataFrame(rows)
+                figb=px.line(bedf,x='oil_price',y='npv',title='Oil-price breakeven curve')
+                figb.add_hline(y=0,line_dash='dash'); figb.add_vline(x=be,line_dash='dash'); figb.update_xaxes(title='Oil price (USD/bbl)'); figb.update_yaxes(title=f'NPV ({money_unit})')
+                st.plotly_chart(figb,use_container_width=True)
+
+        st.metric('Minimum economic volume (MMboe)','—' if mev is None else f'{mev:,.2f}')
 
     st.subheader('Value bridge / waterfall')
     wf=npv_waterfall(cf); labels=list(wf); values=[wf[k]*money_factor(money_unit) for k in labels]
@@ -354,13 +385,13 @@ if page == 'Market & advanced':
         st.plotly_chart(px.line(md,x='year',y='gas_usd_sm3',markers=True,title='Gas price deck (USD/Sm³)'),use_container_width=True)
 
     st.markdown('### Spider sensitivity')
-    sp=spider(st.session_state.profile,a,active_deck)
+    sp=spider(st.session_state.profile,a,active_deck,cutoff=cutoff)
     figsp=px.line(sp,x='change_pct',y='npv_mnok',color='variable',markers=True,title='NPV spider plot')
     figsp.add_hline(y=0,line_dash='dash'); figsp.update_xaxes(title='Input change (%)'); figsp.update_yaxes(title='NPV (MNOK)')
     st.plotly_chart(figsp,use_container_width=True)
 
     st.markdown('### Multi-variable breakeven')
-    bet=breakeven_table(st.session_state.profile,a,active_deck)
+    bet=breakeven_table(st.session_state.profile,a,active_deck,cutoff=cutoff)
     st.dataframe(bet.style.format({'breakeven_factor':'{:.3f}','breakeven_change_pct':'{:.1f}%'}),use_container_width=True,hide_index=True)
     available=bet.dropna(subset=['breakeven_change_pct'])
     if not available.empty:
@@ -489,6 +520,7 @@ if page == 'Projects & reports':
             loaded=loads_project(uploaded); st.success(f"Project schema {loaded['schema_version']} validated.")
             st.json({'metadata':loaded.get('metadata',{}),'settings':loaded.get('settings',{}),'snapshots':loaded.get('snapshots',[])})
             if st.button('Apply loaded project',type='primary',key='apply_loaded_project'):
+                loaded['profile']=validate_profile_table(loaded['profile']).to_dict('records')
                 st.session_state._pending_project_import=loaded
                 st.rerun()
         except Exception as e: st.error(f'Could not load project: {e}')
