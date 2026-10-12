@@ -1,6 +1,6 @@
 from __future__ import annotations
 import numpy as np, pandas as pd
-from .conventions import BOE_PER_SM3_GAS, pandas as pd
+from .conventions import BOE_PER_SM3_GAS
 
 def _basis_factor(basis, wi):
     if basis not in ("gross_field","net_company"):
