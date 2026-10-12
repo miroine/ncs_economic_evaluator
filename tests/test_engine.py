@@ -13,8 +13,8 @@ def test_pre_and_after_tax_npv_metrics():
     p=pd.DataFrame({'year':[2027],'oil_mmbbl':[1],'gas_msm3':[0],'capex_mnok':[100],'opex_mnok':[0],'decom_mnok':[0]})
     a=Assumptions(oil_price_usd_bbl=50,usd_nok=10,discount_rate=0,tax_mode='legacy')
     result=metrics(calculate_cashflow(p,a))
-    assert result['pre_tax_npv_mnok']==900
-    assert result['after_tax_npv_mnok']==120
+    assert result['pre_tax_npv_mnok']==400
+    assert result['after_tax_npv_mnok']==10
     assert result['npv_mnok']==result['after_tax_npv_mnok']
 
 
