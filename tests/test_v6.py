@@ -22,7 +22,7 @@ def test_analysis_studio_unit_cost_uses_canonical_gas_conversion():
         'capex_mnok': [2000.0], 'opex_mnok': [0.0], 'decom_mnok': [0.0],
     })
     a = Assumptions(tax_mode='legacy', ordinary_tax=0, special_tax=0)
-    assert evaluate(p, a, 'Production / reserves', 0)['unit_cost_nok_boe'] == 1000.0
+    assert np.isclose(evaluate(p, a, 'Production / reserves', 0)['unit_cost_nok_boe'], 1000.0)
 
 def test_nominal_escalates_prices_and_costs():
     a=Assumptions(money_basis='nominal', oil_escalation=.1, gas_escalation=.1, cost_escalation=.1)

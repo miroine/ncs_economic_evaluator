@@ -171,7 +171,7 @@ cutoff = CutoffSettings(mode=cutoff_mode, hard_cutoff_year=int(hard_year) if cut
 active_profile = expand_profile(st.session_state.profile, time_resolution, capex_phasing)
 cf = calculate_cashflow(active_profile, a, active_deck, cutoff)
 m = metrics(cf)
-be = breakeven_oil_price(st.session_state.profile, a) if not use_deck and page in ('Dashboard', 'Sensitivity & breakeven') else None
+be = breakeven_oil_price(st.session_state.profile, a, cutoff=cutoff) if not use_deck and page in ('Dashboard', 'Sensitivity & breakeven') else None
 
 # Lightweight shared scenario state. Keep this outside individual pages because
 # decision-tree, exports and audit views consume the same scenario economics.
@@ -192,7 +192,7 @@ scenario_results = pd.DataFrame(columns=['scenario', 'npv_mnok', 'irr', 'payback
 scenario_cfs = {}
 if page in ('Scenarios', 'Decision tree', 'Data / audit', 'Market & advanced', 'Projects & reports'):
     scenarios=current_scenarios()
-    scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios)
+    scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios,active_deck,cutoff)
 scenario_values=dict(zip(scenario_results['scenario'],scenario_results['npv_mnok'])) if not scenario_results.empty else {}
 
 if page == 'Dashboard':
@@ -228,7 +228,7 @@ if page == 'Scenarios':
     st.caption('Scenario factors modify the current base profile and assumptions. Each scenario exposes an NPV that can be linked to a decision-tree outcome.')
     st.session_state.scenario_table=st.data_editor(st.session_state.scenario_table,num_rows='dynamic',use_container_width=True,key='scenario_editor')
     scenarios=current_scenarios()
-    scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios)
+    scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios,active_deck,cutoff)
     scenario_values=dict(zip(scenario_results['scenario'],scenario_results['npv_mnok'])) if not scenario_results.empty else {}
     st.dataframe(scenario_results,use_container_width=True,hide_index=True)
     if not scenario_results.empty:
@@ -266,7 +266,7 @@ if page == 'Uncertainty':
 
 if page == 'Sensitivity & breakeven':
     st.subheader('Sensitivity, tornado & breakeven')
-    tdf, base_npv = tornado(st.session_state.profile,a)
+    tdf, base_npv = tornado(st.session_state.profile,a,market_deck=active_deck,cutoff=cutoff)
     fig=go.Figure()
     fig.add_bar(y=tdf['variable'],x=tdf['low_delta']*money_factor(money_unit),orientation='h',name='Low case')
     fig.add_bar(y=tdf['variable'],x=tdf['high_delta']*money_factor(money_unit),orientation='h',name='High case')
@@ -276,7 +276,7 @@ if page == 'Sensitivity & breakeven':
     c1,c2=st.columns(2)
     with c1:
         variable=st.selectbox('Sensitivity curve variable',['Oil price','Gas price','Production','CAPEX','OPEX'])
-        curve=sensitivity_curve(st.session_state.profile,a,variable)
+        curve=sensitivity_curve(st.session_state.profile,a,variable,market_deck=active_deck,cutoff=cutoff)
         curve['npv_display']=curve['npv_mnok']*money_factor(money_unit)
         figc=px.line(curve,x='change_pct',y='npv_display',markers=True,title=f'{variable} sensitivity curve')
         figc.add_hline(y=0,line_dash='dash'); figc.update_xaxes(title='Change from base (%)'); figc.update_yaxes(title=f'NPV ({money_unit})')
@@ -294,7 +294,7 @@ if page == 'Sensitivity & breakeven':
             rows=[]
             for price in prices:
                 aa=Assumptions(**{**a.__dict__,'oil_price_usd_bbl':float(price)})
-                rows.append({'oil_price':price,'npv':metrics(calculate_cashflow(st.session_state.profile,aa))['npv_mnok']*money_factor(money_unit)})
+                rows.append({'oil_price':price,'npv':metrics(calculate_cashflow(st.session_state.profile,aa,cutoff=cutoff))['npv_mnok']*money_factor(money_unit)})
             bedf=pd.DataFrame(rows)
             figb=px.line(bedf,x='oil_price',y='npv',title='Oil-price breakeven curve')
             figb.add_hline(y=0,line_dash='dash'); figb.add_vline(x=be,line_dash='dash'); figb.update_xaxes(title='Oil price (USD/bbl)'); figb.update_yaxes(title=f'NPV ({money_unit})')
@@ -471,9 +471,9 @@ if page == 'Analysis studio':
     else: st.info('Run Monte Carlo first to populate downside and driver diagnostics.')
 
 if page == 'Projects & reports':
-    st.subheader('Projects, versions & decision report')
+    st.subheader('Projects & reports')
     project_name=st.text_input('Project name','NCS Development Case')
-    version_name=st.text_input('Snapshot version','V10.0')
+    version_name=st.text_input('Snapshot label','Baseline')
     if 'snapshots' not in st.session_state: st.session_state.snapshots=[]
     if st.button('Create economics snapshot'):
         st.session_state.snapshots.append(snapshot(project_name,version_name,m).__dict__)

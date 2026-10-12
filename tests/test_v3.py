@@ -11,6 +11,18 @@ def test_scenario_evaluation():
     df,_=evaluate_scenarios(profile(),Assumptions(),[Scenario('Base'),Scenario('High',production_factor=1.2)])
     assert len(df)==2 and df.loc[1,'npv_mnok']>df.loc[0,'npv_mnok']
 
+def test_scenarios_apply_price_factors_to_market_deck():
+    deck = pd.DataFrame({
+        'year': [2027, 2028, 2029], 'oil_usd_bbl': [50, 50, 50],
+        'gas_usd_sm3': [.2, .2, .2], 'usd_nok': [10, 10, 10],
+    })
+    results, _ = evaluate_scenarios(
+        profile(), Assumptions(),
+        [Scenario('Base'), Scenario('High', oil_factor=1.2)],
+        market_deck=deck,
+    )
+    assert results.loc[1, 'npv_mnok'] > results.loc[0, 'npv_mnok']
+
 def test_tree_scenario_link_and_decision():
     tree={'nodes':[{'id':'d','type':'decision'},{'id':'a','type':'outcome','scenario_key':'A'},{'id':'b','type':'outcome','scenario_key':'B'}], 'edges':[{'id':'e1','source':'d','target':'a'},{'id':'e2','source':'d','target':'b'}]}
     r=evaluate_tree(tree,{'A':10,'B':20}); assert r['value']==20 and 'e2' in r['selected_edges']

@@ -30,11 +30,15 @@ def apply_scenario(profile: pd.DataFrame, assumptions: Assumptions, scenario: Sc
             p[c] = p[c].shift(scenario.start_delay_years, fill_value=0)
     return p, a
 
-def evaluate_scenarios(profile, assumptions, scenarios):
+def evaluate_scenarios(profile, assumptions, scenarios, market_deck=None, cutoff=None):
     rows=[]; cashflows={}
     for s in scenarios:
         p,a=apply_scenario(profile, assumptions, s)
-        cf=calculate_cashflow(p,a); m=metrics(cf)
+        deck=None if market_deck is None else market_deck.copy()
+        if deck is not None:
+            deck['oil_usd_bbl']*=s.oil_factor
+            deck['gas_usd_sm3']*=s.gas_factor
+        cf=calculate_cashflow(p,a,deck,cutoff); m=metrics(cf)
         rows.append({'scenario':s.name, **m})
         cashflows[s.name]=cf
     return pd.DataFrame(rows), cashflows

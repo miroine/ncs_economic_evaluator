@@ -82,11 +82,11 @@ def metrics(df: pd.DataFrame):
     return {'npv_mnok': float(df['discounted_cf_mnok'].sum()), 'irr': float(irr) if np.isfinite(irr) else None, 'payback_year': payback}
 
 
-def breakeven_oil_price(profile, assumptions, low=0.0, high=250.0, iterations=80):
+def breakeven_oil_price(profile, assumptions, low=0.0, high=250.0, iterations=80, cutoff=None):
     for _ in range(iterations):
         mid = (low + high) / 2
         trial = Assumptions(**{**assumptions.__dict__, 'oil_price_usd_bbl': mid})
-        npv = metrics(calculate_cashflow(profile, trial))['npv_mnok']
+        npv = metrics(calculate_cashflow(profile, trial, cutoff=cutoff))['npv_mnok']
         if npv >= 0: high = mid
         else: low = mid
     return (low + high) / 2
