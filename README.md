@@ -58,6 +58,10 @@ Version 6 adds a common economics-convention layer and a richer analysis workspa
 
 Use a real discount rate with real/constant-money cash flows, or a nominal discount rate with nominal/money-of-the-day cash flows. If the entered discount-rate basis differs from the selected cash-flow basis, the app converts it using the configured general inflation rate and exposes the effective rate in the dashboard/audit output.
 
+### Profile editing and economics metrics
+
+The **Production & costs** module supports manual edits with an explicit **Apply manual profile** action, plus CSV and Excel profile imports. The downloadable CSV template uses canonical units and columns: `year`, `oil_mmbbl`, `gas_msm3`, `capex_mnok`, `opex_mnok`, and optional `decom_mnok`. The **Economics** table converts oil and gas volumes into the selected display units. The dashboard reports pre-tax and after-tax NPV, oil-price/deck breakeven, and minimum economic volume (MEV) in MMboe.
+
 The NCS fiscal engine remains an analytical project-level model. Company tax position, financing allocation, norm-price effects and all transitional/vintage rules must be reconciled before decision-grade use.
 
 ## Version 7 — visual design system

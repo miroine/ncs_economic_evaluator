@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from economics.engine import Assumptions, calculate_cashflow
 from economics.conventions import real_to_nominal_rate, nominal_to_real_rate, money_factor, oil_factor, gas_factor

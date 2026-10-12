@@ -5,7 +5,7 @@ from economics.cutoff import CutoffSettings
 from economics.production import generated_profile
 from economics.concepts import DevelopmentConcept, compare_concepts
 from economics.value_of_information import evsi_from_signals
-from economics.advanced_analysis import breakeven_suite
+from economics.advanced_analysis import breakeven_suite, spider, breakeven_table
 
 def profile():
     return pd.DataFrame({'year':[2027,2028,2029,2030,2031],'oil_mmbbl':[5,4,2,.2,.1],'gas_msm3':[0]*5,'capex_mnok':[100,0,0,0,0],'opex_mnok':[20,20,20,20,20],'decom_mnok':[0,0,0,0,50]})
@@ -34,3 +34,14 @@ def test_evsi_net_value():
 def test_breakeven_suite_shape():
     x=breakeven_suite(profile(),Assumptions())
     assert {'Oil price','CAPEX','Production'}.issubset(set(x.variable))
+
+def test_sensitivity_and_breakeven_respect_cutoff():
+    p=profile()
+    cutoff=CutoffSettings(mode='hard',hard_cutoff_year=2029)
+    curve=spider(p,Assumptions(),changes=(0,),cutoff=cutoff)
+    uncapped=calculate_cashflow(p,Assumptions())
+    capped=calculate_cashflow(p,Assumptions(),cutoff=cutoff)
+    assert curve.loc[curve.variable=='Oil price','npv_mnok'].iloc[0] == capped.discounted_cf_mnok.sum()
+    assert capped.discounted_cf_mnok.sum() != uncapped.discounted_cf_mnok.sum()
+    table=breakeven_table(p,Assumptions(),cutoff=cutoff)
+    assert table.variable.tolist()

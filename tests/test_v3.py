@@ -31,6 +31,12 @@ def test_chance_emv():
     tree={'nodes':[{'id':'c','type':'chance'},{'id':'a','type':'outcome','value':10},{'id':'b','type':'outcome','value':30}], 'edges':[{'source':'c','target':'a','probability':.25},{'source':'c','target':'b','probability':.75}]}
     assert evaluate_tree(tree)['value']==25
 
+def test_tree_warns_when_scenario_link_is_missing():
+    tree={'nodes':[{'id':'o','type':'outcome','label':'High','scenario_key':'High resource','value':25}],'edges':[]}
+    result=evaluate_tree(tree,{})
+    assert result['value']==25
+    assert any('missing scenario' in warning for warning in result['warnings'])
+
 def test_monte_carlo_reproducible():
     x=run_monte_carlo(profile(),Assumptions(),iterations=50,seed=7); y=run_monte_carlo(profile(),Assumptions(),iterations=50,seed=7)
     assert (x==y).all() and 0 <= summary(x)['prob_npv_positive'] <= 1

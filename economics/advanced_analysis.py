@@ -8,7 +8,7 @@ from .engine import calculate_cashflow, metrics
 
 VARIABLES=('Oil price','Gas price','Production','CAPEX','OPEX','FX')
 
-def _case(profile,a,variable,factor,market_deck=None):
+def _case(profile,a,variable,factor,market_deck=None,cutoff=None):
     p=profile.copy(); aa=copy.deepcopy(a); deck=None if market_deck is None else market_deck.copy()
     if variable=='Oil price':
         if deck is None: aa.oil_price_usd_bbl*=factor
@@ -22,30 +22,32 @@ def _case(profile,a,variable,factor,market_deck=None):
     elif variable=='Production': p[['oil_mmbbl','gas_msm3']]*=factor
     elif variable=='CAPEX': p['capex_mnok']*=factor
     elif variable=='OPEX': p['opex_mnok']*=factor
-    return metrics(calculate_cashflow(p,aa,deck))['npv_mnok']
+    return metrics(calculate_cashflow(p,aa,deck,cutoff))['npv_mnok']
 
-def spider(profile,a,market_deck=None,variables=VARIABLES,changes=(-40,-30,-20,-10,0,10,20,30,40)):
+
+def spider(profile,a,market_deck=None,variables=VARIABLES,changes=(-40,-30,-20,-10,0,10,20,30,40),cutoff=None):
     rows=[]
     for v in variables:
-        for pct in changes: rows.append({'variable':v,'change_pct':pct,'npv_mnok':_case(profile,a,v,1+pct/100,market_deck)})
+        for pct in changes: rows.append({'variable':v,'change_pct':pct,'npv_mnok':_case(profile,a,v,1+pct/100,market_deck,cutoff)})
     return pd.DataFrame(rows)
 
-def breakeven_factor(profile,a,variable,market_deck=None,low=0.05,high=5.0,iterations=70):
-    f0=_case(profile,a,variable,low,market_deck); f1=_case(profile,a,variable,high,market_deck)
+
+def breakeven_factor(profile,a,variable,market_deck=None,low=0.05,high=5.0,iterations=70,cutoff=None):
+    f0=_case(profile,a,variable,low,market_deck,cutoff); f1=_case(profile,a,variable,high,market_deck,cutoff)
     if f0==0: return low
     if f1==0: return high
     if f0*f1>0: return None
     lo,hi=low,high
     for _ in range(iterations):
-        mid=(lo+hi)/2; fm=_case(profile,a,variable,mid,market_deck)
+        mid=(lo+hi)/2; fm=_case(profile,a,variable,mid,market_deck,cutoff)
         if (f0<=0<=fm) or (f0>=0>=fm): hi=mid
         else: lo=mid; f0=fm
     return (lo+hi)/2
 
-def breakeven_table(profile,a,market_deck=None):
+def breakeven_table(profile,a,market_deck=None,cutoff=None):
     rows=[]
     for v in VARIABLES:
-        b=breakeven_factor(profile,a,v,market_deck)
+        b=breakeven_factor(profile,a,v,market_deck,cutoff=cutoff)
         rows.append({'variable':v,'breakeven_factor':b,'breakeven_change_pct':None if b is None else (b-1)*100})
     return pd.DataFrame(rows)
 
