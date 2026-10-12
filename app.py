@@ -173,7 +173,7 @@ cf = calculate_cashflow(active_profile, a, active_deck, cutoff)
 m = metrics(cf)
 be = breakeven_oil_price(st.session_state.profile, a, cutoff=cutoff) if not use_deck and page in ('Dashboard', 'Sensitivity & breakeven') else None
 deck_be = breakeven_factor(st.session_state.profile, a, 'Oil price', active_deck, cutoff=cutoff) if use_deck and page in ('Dashboard', 'Sensitivity & breakeven') else None
-mev = minimum_economic_volume(st.session_state.profile, a, active_deck, cutoff) if page == 'Dashboard' else None
+mev = minimum_economic_volume(st.session_state.profile, a, active_deck, cutoff) if page in ('Dashboard', 'Sensitivity & breakeven') else None
 
 # Lightweight shared scenario state. Keep this outside individual pages because
 # decision-tree, exports and audit views consume the same scenario economics.
