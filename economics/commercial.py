@@ -1,5 +1,6 @@
 from __future__ import annotations
 import numpy as np, pandas as pd
+from .conventions import BOE_PER_SM3_GAS
 
 def _basis_factor(basis, wi):
     if basis not in ("gross_field","net_company"):
@@ -14,7 +15,7 @@ def apply_commercial_terms(cf, tariff_nok_boe=0.0, transport_mnok=0.0, host_capa
     already net to the company.  This prevents double ownership scaling.
     """
     out=cf.copy(); oil=np.asarray(out.get("oil_mmbbl",0),float); gas=np.asarray(out.get("gas_msm3",0),float)
-    boe=oil*1e6 + gas*1e6/169.9
+    boe=oil*1e6 + gas*1e6*BOE_PER_SM3_GAS
     if host_capacity_mboe is not None:
         cap=float(host_capacity_mboe)*1e3
         scale=np.minimum(1.0,np.divide(cap,boe,out=np.ones_like(boe,dtype=float),where=boe>0))

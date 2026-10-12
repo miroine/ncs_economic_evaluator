@@ -3,6 +3,7 @@ import copy
 import numpy as np
 import pandas as pd
 from .engine import calculate_cashflow, metrics
+from .conventions import BOE_PER_SM3_GAS
 
 VARS=('Oil price','Gas price','FX','Production / reserves','CAPEX','OPEX','Discount rate','Start delay')
 
@@ -17,7 +18,7 @@ def evaluate(profile,a,variable,change_pct,deck=None,cutoff=None):
     elif variable=='Discount rate': aa.discount_rate=max(-.95,aa.discount_rate*f)
     elif variable=='Start delay': p['year']=p['year'].astype(int)+int(round(change_pct/10))
     cf=calculate_cashflow(p,aa,d,cutoff); m=metrics(cf)
-    m['undiscounted_after_tax_mnok']=float(cf.after_tax_cf_mnok.sum()); m['unit_cost_nok_boe']=float((cf.capex_mnok.sum()+cf.opex_mnok.sum())*1e6/max((cf.oil_mmbbl.sum()+cf.gas_msm3.sum()/159)*1e6,1))
+    m['undiscounted_after_tax_mnok']=float(cf.after_tax_cf_mnok.sum()); m['unit_cost_nok_boe']=float((cf.capex_mnok.sum()+cf.opex_mnok.sum())*1e6/max((cf.oil_mmbbl.sum()+cf.gas_msm3.sum()*BOE_PER_SM3_GAS)*1e6,1))
     return m
 
 def curve(profile,a,variable,metric='npv_mnok',changes=(-40,-30,-20,-10,0,10,20,30,40),deck=None,cutoff=None):

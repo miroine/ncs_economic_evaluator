@@ -83,7 +83,7 @@ with st.sidebar:
     theme_name=st.selectbox("Interface theme", list(THEMES), index=0, key="theme_name")
 apply_theme(theme_name)
 
-st.markdown("""<div class="ncs-hero"><div class="ncs-kicker">NCS project economics</div><h1 style="margin:.15rem 0 .2rem 0">NCS Economics Workbench V12.2 Audit Fix</h1><div class="ncs-sub">Project economics · fiscal modelling · uncertainty · decision analysis</div></div>""", unsafe_allow_html=True)
+st.markdown("""<div class="ncs-hero"><div class="ncs-kicker">NCS project economics</div><h1 style="margin:.15rem 0 .2rem 0">NCS Economics Workbench</h1><div class="ncs-sub">Project economics · fiscal modelling · uncertainty · decision analysis</div></div>""", unsafe_allow_html=True)
 
 years = list(range(2027, 2042))
 def default_profile():
@@ -119,7 +119,7 @@ if '_pending_project_import' in st.session_state:
     if 'time_resolution' in ls: st.session_state.setting_resolution=ls['time_resolution']
     if 'capex_phasing' in ls: st.session_state.setting_capex_phasing=ls['capex_phasing']
 
-PAGES = ['Dashboard','Production & costs','Economics','Scenarios','Uncertainty','Sensitivity & breakeven','Decision tree','Data / audit','Market & advanced','V9 decision studio','V10 analysis studio','Projects & reports','V11 exploration & portfolio','V12 integrated field development']
+PAGES = ['Dashboard','Production & costs','Economics','Scenarios','Uncertainty','Sensitivity & breakeven','Decision tree','Data / audit','Market & advanced','Decision studio','Analysis studio','Projects & reports','Exploration & portfolio','Integrated field development']
 with st.sidebar:
     st.subheader('Workspace')
     page = st.selectbox('Module', PAGES, key='active_page')
@@ -158,7 +158,7 @@ with st.sidebar:
     min_gas=st.number_input('Minimum gas rate (MSm³/period)',0.0,10000.0,0.0,10.0)
     decom_lag=st.number_input('Decommissioning lag (periods)',0,10,1,1)
     st.divider()
-    st.subheader('V10 model resolution')
+    st.subheader('Model resolution')
     time_resolution=st.selectbox('Cash-flow resolution',['annual','quarterly','monthly'],format_func=str.title,key='setting_resolution')
     capex_phasing=st.selectbox('Subannual CAPEX phasing',['even','front'],format_func=lambda x:'Even' if x=='even' else 'Front-loaded',key='setting_capex_phasing')
     fiscal_engine=st.selectbox('Fiscal engine',['ncs_v2','ncs_post_2022'],format_func=lambda x:'NCS fiscal V2' if x=='ncs_v2' else 'Legacy post-2022 baseline',key='setting_fiscal_engine')
@@ -171,7 +171,7 @@ cutoff = CutoffSettings(mode=cutoff_mode, hard_cutoff_year=int(hard_year) if cut
 active_profile = expand_profile(st.session_state.profile, time_resolution, capex_phasing)
 cf = calculate_cashflow(active_profile, a, active_deck, cutoff)
 m = metrics(cf)
-be = breakeven_oil_price(st.session_state.profile, a) if not use_deck else None
+be = breakeven_oil_price(st.session_state.profile, a, cutoff=cutoff) if not use_deck and page in ('Dashboard', 'Sensitivity & breakeven') else None
 
 # Lightweight shared scenario state. Keep this outside individual pages because
 # decision-tree, exports and audit views consume the same scenario economics.
@@ -188,8 +188,11 @@ def current_scenarios():
         try: out.append(Scenario(**row))
         except (TypeError, ValueError): pass
     return out
-scenarios=current_scenarios()
-scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios)
+scenario_results = pd.DataFrame(columns=['scenario', 'npv_mnok', 'irr', 'payback_year'])
+scenario_cfs = {}
+if page in ('Scenarios', 'Decision tree', 'Data / audit', 'Market & advanced', 'Projects & reports'):
+    scenarios=current_scenarios()
+    scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios,active_deck,cutoff)
 scenario_values=dict(zip(scenario_results['scenario'],scenario_results['npv_mnok'])) if not scenario_results.empty else {}
 
 if page == 'Dashboard':
@@ -225,7 +228,7 @@ if page == 'Scenarios':
     st.caption('Scenario factors modify the current base profile and assumptions. Each scenario exposes an NPV that can be linked to a decision-tree outcome.')
     st.session_state.scenario_table=st.data_editor(st.session_state.scenario_table,num_rows='dynamic',use_container_width=True,key='scenario_editor')
     scenarios=current_scenarios()
-    scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios)
+    scenario_results, scenario_cfs=evaluate_scenarios(st.session_state.profile,a,scenarios,active_deck,cutoff)
     scenario_values=dict(zip(scenario_results['scenario'],scenario_results['npv_mnok'])) if not scenario_results.empty else {}
     st.dataframe(scenario_results,use_container_width=True,hide_index=True)
     if not scenario_results.empty:
@@ -263,7 +266,7 @@ if page == 'Uncertainty':
 
 if page == 'Sensitivity & breakeven':
     st.subheader('Sensitivity, tornado & breakeven')
-    tdf, base_npv = tornado(st.session_state.profile,a)
+    tdf, base_npv = tornado(st.session_state.profile,a,market_deck=active_deck,cutoff=cutoff)
     fig=go.Figure()
     fig.add_bar(y=tdf['variable'],x=tdf['low_delta']*money_factor(money_unit),orientation='h',name='Low case')
     fig.add_bar(y=tdf['variable'],x=tdf['high_delta']*money_factor(money_unit),orientation='h',name='High case')
@@ -273,7 +276,7 @@ if page == 'Sensitivity & breakeven':
     c1,c2=st.columns(2)
     with c1:
         variable=st.selectbox('Sensitivity curve variable',['Oil price','Gas price','Production','CAPEX','OPEX'])
-        curve=sensitivity_curve(st.session_state.profile,a,variable)
+        curve=sensitivity_curve(st.session_state.profile,a,variable,market_deck=active_deck,cutoff=cutoff)
         curve['npv_display']=curve['npv_mnok']*money_factor(money_unit)
         figc=px.line(curve,x='change_pct',y='npv_display',markers=True,title=f'{variable} sensitivity curve')
         figc.add_hline(y=0,line_dash='dash'); figc.update_xaxes(title='Change from base (%)'); figc.update_yaxes(title=f'NPV ({money_unit})')
@@ -291,7 +294,7 @@ if page == 'Sensitivity & breakeven':
             rows=[]
             for price in prices:
                 aa=Assumptions(**{**a.__dict__,'oil_price_usd_bbl':float(price)})
-                rows.append({'oil_price':price,'npv':metrics(calculate_cashflow(st.session_state.profile,aa))['npv_mnok']*money_factor(money_unit)})
+                rows.append({'oil_price':price,'npv':metrics(calculate_cashflow(st.session_state.profile,aa,cutoff=cutoff))['npv_mnok']*money_factor(money_unit)})
             bedf=pd.DataFrame(rows)
             figb=px.line(bedf,x='oil_price',y='npv',title='Oil-price breakeven curve')
             figb.add_hline(y=0,line_dash='dash'); figb.add_vline(x=be,line_dash='dash'); figb.update_xaxes(title='Oil price (USD/bbl)'); figb.update_yaxes(title=f'NPV ({money_unit})')
@@ -387,8 +390,8 @@ if page == 'Market & advanced':
     st.download_button('Download analysis workbook (.xlsx)',wb,'ncs_economics_analysis.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
-if page == 'V9 decision studio':
-    st.subheader('V9 decision studio')
+if page == 'Decision studio':
+    st.subheader('Decision studio')
     st.caption('Cutoff-aware development concepts, generated production profiles, expanded breakevens, and value-of-information analysis.')
     st.markdown('### Production profile generator')
     g1,g2,g3,g4=st.columns(4)
@@ -433,8 +436,8 @@ if page == 'V9 decision studio':
     st.markdown('### Cutoff audit')
     st.json({'mode':cutoff.mode,'cessation_year':cf.attrs.get('cutoff_year'),'reason':cf.attrs.get('cutoff_reason'),'consecutive_negative_periods':cutoff.consecutive_negative_periods,'lookahead_periods':cutoff.lookahead_periods,'minimum_oil_mmbbl':cutoff.minimum_oil_mmbbl,'minimum_gas_msm3':cutoff.minimum_gas_msm3,'decommissioning_lag_periods':cutoff.decom_lag_periods})
 
-if page == 'V10 analysis studio':
-    st.subheader('V10 analysis studio')
+if page == 'Analysis studio':
+    st.subheader('Analysis studio')
     st.caption('One workspace for timing, reserves, named decks, breakevens, concepts, uncertainty and fiscal diagnostics. All economics here use the selected cutoff rule.')
     r1,r2,r3,r4=st.columns(4)
     r1.metric('Resolution',time_resolution.title()); r2.metric('Periods',f'{len(cf):,}'); r3.metric('Government take', '—' if not np.isfinite(government_take(cf)) else f'{government_take(cf):.1%}'); r4.metric('Cessation',cf.attrs.get('cutoff_year') or 'Not triggered')
@@ -468,9 +471,9 @@ if page == 'V10 analysis studio':
     else: st.info('Run Monte Carlo first to populate downside and driver diagnostics.')
 
 if page == 'Projects & reports':
-    st.subheader('Projects, versions & decision report')
+    st.subheader('Projects & reports')
     project_name=st.text_input('Project name','NCS Development Case')
-    version_name=st.text_input('Snapshot version','V10.0')
+    version_name=st.text_input('Snapshot label','Baseline')
     if 'snapshots' not in st.session_state: st.session_state.snapshots=[]
     if st.button('Create economics snapshot'):
         st.session_state.snapshots.append(snapshot(project_name,version_name,m).__dict__)
@@ -479,7 +482,7 @@ if page == 'Projects & reports':
     report=decision_report_text(project_name,m,cf.attrs.get('cutoff_year'),cf.attrs.get('cutoff_reason'),st.session_state.get('concept_table'))
     st.download_button('Download investment-decision summary (.md)',report,'investment_decision_summary.md','text/markdown')
     project_bytes=dumps_project(st.session_state.profile,a,st.session_state.scenario_table,st.session_state.get('decision_tree',{}),{'author':'Merouane Hamdani','purpose':'Educational purposes only — non-commercial','app_version':'V12.2-audit-fix'},st.session_state.market_deck,st.session_state.get('concept_table'),{'time_resolution':time_resolution,'capex_phasing':capex_phasing,'cutoff':cutoff.__dict__},st.session_state.snapshots)
-    st.download_button('Save complete V12.2 project (.json)',project_bytes,'ncs_project_v12_2.json','application/json')
+    st.download_button('Save complete project (.json)',project_bytes,'ncs_project.json','application/json')
     uploaded=st.file_uploader('Load V9/V10/V11/V11.1/V12/V12.1 project JSON',type=['json'])
     if uploaded is not None:
         try:
@@ -490,8 +493,8 @@ if page == 'Projects & reports':
                 st.rerun()
         except Exception as e: st.error(f'Could not load project: {e}')
 
-if page == 'V11 exploration & portfolio':
-    st.subheader('V11 exploration + development decision system')
+if page == 'Exploration & portfolio':
+    st.subheader('Exploration + development decision system')
     st.caption('Risk prospects, quantify schedule/commercial exposure, manage decision gates, screen constrained portfolios, and run model-assurance checks.')
     e1,e2=st.columns(2)
     with e1:
@@ -506,9 +509,14 @@ if page == 'V11 exploration & portfolio':
     with e2:
         st.markdown('### Schedule risk')
         stages=[{'name':'Approvals','min_months':0,'mode_months':2,'max_months':8},{'name':'Drilling','min_months':0,'mode_months':3,'max_months':12},{'name':'Construction','min_months':0,'mode_months':4,'max_months':18},{'name':'Commissioning','min_months':0,'mode_months':1,'max_months':6}]
-        sr=simulate_schedule_risk(stages,2000,42,max(abs(m.get('npv_mnok',0))*.002,1.0)); ss=schedule_summary(sr)
-        st.dataframe(pd.DataFrame([ss]),hide_index=True,use_container_width=True)
-        st.plotly_chart(px.histogram(sr,x='total_delay_months',nbins=35,title='First-production delay distribution'),use_container_width=True)
+        if st.button('Run schedule risk simulation', key='run_schedule_risk'):
+            st.session_state.schedule_risk_samples=simulate_schedule_risk(stages,2000,42,max(abs(m.get('npv_mnok',0))*.002,1.0))
+        if 'schedule_risk_samples' in st.session_state:
+            sr=st.session_state.schedule_risk_samples; ss=schedule_summary(sr)
+            st.dataframe(pd.DataFrame([ss]),hide_index=True,use_container_width=True)
+            st.plotly_chart(px.histogram(sr,x='total_delay_months',nbins=35,title='First-production delay distribution'),use_container_width=True)
+        else:
+            st.info('Run the schedule risk simulation to view the first-production delay distribution.')
     st.markdown('### Decision gates')
     gates=[DecisionGate('Discovery','Complete',pe['risked_emv_mnok'],dry),DecisionGate('Appraisal','Open',max(pe['success_case_ev_mnok'],0),400),DecisionGate('Concept Select','Open',m.get('npv_mnok',0),250),DecisionGate('FEED','Open',m.get('npv_mnok',0),600),DecisionGate('FID','Open',m.get('npv_mnok',0),0)]
     st.dataframe(pd.DataFrame(gate_register(gates)),hide_index=True,use_container_width=True)
@@ -520,8 +528,8 @@ if page == 'V11 exploration & portfolio':
     health=model_health(st.session_state.profile,active_deck,[.55,.45],{'cessation_year':cf.attrs.get('cutoff_year'),'decom_year':None},recoverable_oil_mmbbl=float(st.session_state.profile.oil_mmbbl.sum())*1.05,money_basis=money_basis,discount_basis=rate_basis)
     st.dataframe(pd.DataFrame(health),hide_index=True,use_container_width=True)
 
-if page == 'V12 integrated field development':
-    st.subheader('V12.2 integrated field development')
+if page == 'Integrated field development':
+    st.subheader('Integrated field development')
     st.caption('Editable resources → wells → facilities → schedule → multi-currency costs → emissions → uncertainty → project-linked decisions → validation.')
 
     c1,c2,c3,c4=st.columns(4)
