@@ -39,3 +39,11 @@ def test_package_and_engine_exports():
     assert 'minimum_economic_volume' in ee.__all__
     assert economics.minimum_economic_volume is ee.minimum_economic_volume
 
+
+def test_irr_fallback_without_numpy_financial(monkeypatch):
+    import economics.engine as ee
+    cf = [-100, 30, 40, 50]
+    rate = ee._NpfFallback.irr(cf)
+    assert rate == pytest.approx(0.08896339, abs=1e-5)
+
+

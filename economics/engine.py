@@ -1,7 +1,25 @@
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-import numpy_financial as npf
+
+class _NpfFallback:
+    @staticmethod
+    def irr(values):
+        values = np.asarray(values, dtype=float)
+        if len(values) <= 1:
+            return np.nan
+        res = np.roots(values[::-1])
+        mask = (res.imag == 0) & (res.real > 0)
+        if not np.any(mask):
+            return np.nan
+        rates = 1.0 / res[mask].real - 1.0
+        valid = rates[rates > -1.0]
+        return float(valid[0]) if len(valid) > 0 else np.nan
+
+try:
+    import numpy_financial as npf
+except ImportError:
+    npf = _NpfFallback()
 
 __all__ = [
     'Assumptions',
