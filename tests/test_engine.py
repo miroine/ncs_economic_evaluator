@@ -28,3 +28,14 @@ def test_oil_breakeven_and_minimum_economic_volume():
 def test_oil_breakeven_returns_none_when_no_root():
     p=pd.DataFrame({'year':[2027],'oil_mmbbl':[0],'gas_msm3':[0],'capex_mnok':[100],'opex_mnok':[0],'decom_mnok':[0]})
     assert breakeven_oil_price(p,Assumptions()) is None
+
+
+def test_package_and_engine_exports():
+    import economics
+    import economics.engine as ee
+    assert hasattr(economics, 'minimum_economic_volume')
+    assert hasattr(ee, 'minimum_economic_volume')
+    assert 'minimum_economic_volume' in economics.__all__
+    assert 'minimum_economic_volume' in ee.__all__
+    assert economics.minimum_economic_volume is ee.minimum_economic_volume
+

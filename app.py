@@ -5,7 +5,47 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit as st
-from economics.engine import Assumptions, calculate_cashflow, metrics, breakeven_oil_price, minimum_economic_volume
+from economics.engine import Assumptions, calculate_cashflow, metrics, breakeven_oil_price
+try:
+    from economics.engine import minimum_economic_volume
+except ImportError:
+    try:
+        from economics import minimum_economic_volume
+    except ImportError:
+        import importlib
+        import economics.engine
+        importlib.reload(economics.engine)
+        try:
+            from economics.engine import minimum_economic_volume
+        except ImportError:
+            def minimum_economic_volume(profile, assumptions, market_deck=None, cutoff=None, max_factor=1_000_000):
+                from economics.conventions import BOE_PER_SM3_GAS
+
+                base_volume = float(profile['oil_mmbbl'].sum() + profile['gas_msm3'].sum() * BOE_PER_SM3_GAS)
+                if not np.isfinite(base_volume) or base_volume <= 0:
+                    return None
+
+                def value(factor):
+                    trial_profile = profile.copy()
+                    trial_profile[['oil_mmbbl', 'gas_msm3']] *= factor
+                    return metrics(calculate_cashflow(trial_profile, assumptions, market_deck, cutoff))['npv_mnok']
+
+                low, high = 0.0, 1.0
+                low_value, high_value = value(low), value(high)
+                if low_value >= 0:
+                    return 0.0
+                while high_value < 0 and high < max_factor:
+                    high = min(high * 2, max_factor)
+                    high_value = value(high)
+                if high_value < 0:
+                    return None
+                for _ in range(80):
+                    mid = (low + high) / 2
+                    if value(mid) >= 0:
+                        high = mid
+                    else:
+                        low = mid
+                return base_volume * (low + high) / 2
 from economics.analysis import tornado, sensitivity_curve, npv_waterfall
 from economics.market import default_market_deck, validate_market_deck
 from economics.advanced_analysis import spider, breakeven_table, breakeven_factor, exceedance_curve, tax_bridge, excel_workbook, breakeven_suite, extended_breakeven_suite
