@@ -6,9 +6,9 @@ Streamlit prototype for offshore/NCS project economics and decision analysis.
 
 - Bidirectional Streamlit decision-tree component (browser JavaScript ↔ Python state).
 - Drag/drop decision, chance and outcome nodes with editable chance probabilities.
-- Outcome nodes link directly to named economic scenarios and display live scenario NPV.
-- Tree edits are evaluated immediately by the Python EMV rollback engine.
-- Decision-tree Monte Carlo: correlated uncertain project economics propagate through scenario NPVs and tree rollback.
+- Outcome nodes link directly to named economic scenarios and display the latest successful run's scenario NPV.
+- Tree edits are evaluated by the Python EMV rollback engine when **Run all analyses** is selected.
+- Correlated Monte Carlo evaluates project NPV; stochastic tree evaluation remains available through the Python API.
 - Uncertainty distributions: lognormal, normal and triangular.
 - Gaussian-copula correlation controls for oil/gas, CAPEX/OPEX and production/CAPEX.
 - Correlation diagnostics and reproducible random seeds.
@@ -20,6 +20,30 @@ Streamlit prototype for offshore/NCS project economics and decision analysis.
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+### Input-first workflow
+
+1. Start on **Input Data**, the first visible module. Enter case assumptions,
+   fiscal/cutoff settings, resolution, production/costs, market decks, development
+   concepts, scenarios, uncertainty, decision-tree inputs and exploration inputs.
+2. Manual table edits update the draft immediately. Generator previews, reference
+   decks, profile imports and project imports have explicit apply buttons. Apply a
+   generator preview before running if it should replace the project profile.
+3. Select **Run all analyses** once. It calculates cash flow, dashboard metrics,
+   concepts, all sensitivity curves, tornado/spider plots, breakevens, scenarios,
+   Monte Carlo, decision-tree rollback, exploration and model-health diagnostics.
+   The complete bundle is published together, then Dashboard opens.
+4. Review the result modules or export the analysis workbook. Navigation, theme
+   and display-unit changes reuse the same result bundle without rerunning it.
+5. Any model-input edit hides previous results and analysis exports until another
+   successful run. Failed runs never retain an older result as current.
+
+The sidebar contains presentation settings only. **Input Data → Load / save input
+project** can save a draft without running it. Project JSON includes assumptions,
+profiles, decks, concepts, scenarios, tree, resolution, cutoff, generator,
+uncertainty distributions/correlations, iterations, random seed and exploration
+settings. Loading restores inputs but does not run analyses. Older files use
+defaults for omitted settings instead of inheriting the previous project's values.
 
 ## Important fiscal-model status
 
@@ -60,14 +84,15 @@ Use a real discount rate with real/constant-money cash flows, or a nominal disco
 
 ### Profile editing and economics metrics
 
-The **Production & costs** module supports manual edits with an explicit **Apply manual profile** action, plus CSV and Excel profile imports. The downloadable CSV template uses canonical units and columns: `year`, `oil_mmbbl`, `gas_msm3`, `capex_mnok`, `opex_mnok`, and optional `decom_mnok`. The **Economics** table converts oil and gas volumes into the selected display units. The dashboard reports pre-tax and after-tax NPV, oil-price/deck breakeven, and minimum economic volume (MEV) in MMboe.
+The **Input Data → Production & Cost Profile** tab supports immediate draft edits, plus CSV and Excel profile imports. Select **Run all analyses** to update results. The downloadable CSV template uses canonical units and columns: `year`, `oil_mmbbl`, `gas_msm3`, `capex_mnok`, `opex_mnok`, and optional `decom_mnok`. The **Production & Economics → Cash Flow Statement** table converts oil and gas volumes into the selected display units. The dashboard reports pre-tax and after-tax NPV, oil-price/deck breakeven, and minimum economic volume (MEV) in MMboe.
 
 The NCS fiscal engine remains an analytical project-level model. Company tax position, financing allocation, norm-price effects and all transitional/vintage rules must be reconciled before decision-grade use.
 
 ## Performance, display units and consulting-inspired design
 
 - Modules are always visible as navigation buttons above the workspace, with the
-  active module highlighted. The sidebar is reserved for assumptions and settings.
+  active module highlighted. Model inputs are centralized in **Input Data**;
+  the sidebar is reserved for theme and display units.
 - Monetary KPI cards automatically abbreviate amounts with explicit scales such
   as **4.93 billion NOK** or **250.00 million NOK**, independently of the table/chart
   display-unit selector. Help tooltips retain full amounts in NOK and the selected
@@ -76,7 +101,7 @@ The NCS fiscal engine remains an analytical project-level model. Company tax pos
 
 ### Field-level production generator
 
-The **Production & Economics → Profile Generator & Concepts** workspace supports:
+The **Input Data → Profile Generator & Concepts** workspace supports:
 
 - Oil with associated sales gas, dry gas, gas with condensate, and independent
   oil/gas profiles.
@@ -122,9 +147,9 @@ The legacy `generated_profile` API remains unchanged for existing callers.
 - Monte Carlo, tornado, sensitivity curves and spider plots use batched NumPy
   calculations, with the same shared fiscal ledger as the full cash-flow model.
   NPV-only analysis and breakeven searches no longer solve IRR unnecessarily.
-- Sensitivity, breakeven and market-deck views execute only when selected.
-  Canonical analysis results are cached against their model inputs; changing
-  display units does not recalculate project economics.
+- All analysis families execute through the explicit **Run all analyses** action.
+  Complete canonical bundles are cached against their model inputs; navigating
+  result views or changing display units does not recalculate project economics.
 - Monte Carlo now respects the active annual market deck and economic cutoff.
   Changed model or uncertainty inputs require a new run instead of displaying
   stale results as current. Outdated model samples are excluded from workbook
@@ -132,8 +157,8 @@ The legacy `generated_profile` API remains unchanged for existing callers.
 - Tables, monetary chart legends/axes, scenarios, concepts, snapshots and Monte
   Carlo results convert values **and labels** together. Decision-tree live NPVs
   and fallback inputs also follow the selected money unit; stored tree values
-  remain canonical MNOK. Changing profile-editor units resets its edit buffer,
-  so apply pending edits before switching units.
+  remain canonical MNOK. Profile edits are validated into canonical draft units
+  immediately; switching units preserves accepted edits.
 - The displayed cash-flow CSV uses selected units in its column headings.
   Audit CSVs, Excel workbooks, project JSON and profile import templates retain
   canonical MNOK / MMbbl / MSm3 units for reproducibility. Price, cutoff,

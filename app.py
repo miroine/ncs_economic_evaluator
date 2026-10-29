@@ -1,6 +1,3 @@
-import json
-import io
-import hashlib
 from dataclasses import asdict
 import numpy as np
 import pandas as pd
@@ -10,37 +7,31 @@ import plotly.io as pio
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from economics.engine import Assumptions, calculate_cashflow, metrics, breakeven_oil_price, minimum_economic_volume
-from economics.analysis import tornado, sensitivity_curve, npv_waterfall
+from economics.engine import Assumptions
+from economics.analysis import npv_waterfall
 from economics.market import default_market_deck, validate_market_deck
 from economics.advanced_analysis import (
-    spider, breakeven_table, breakeven_factor, exceedance_curve, tax_bridge,
-    excel_workbook, breakeven_suite, extended_breakeven_suite
+    exceedance_curve, tax_bridge, excel_workbook
 )
 from economics.conventions import (
     BBL_PER_SM3, money_factor, oil_factor, gas_factor, consistent_discount_rate, display_frame, compact_money
 )
-from economics.decision_tree import evaluate_tree
-from economics.scenarios import Scenario, evaluate_scenarios
 from components.decision_tree_component import decision_tree
 from economics.monte_carlo import (
-    Uncertainty, run_monte_carlo, run_tree_monte_carlo, summary as mc_summary, correlation_matrix
+    Uncertainty, summary as mc_summary, correlation_matrix
 )
 from economics.cutoff import CutoffSettings
 from economics.production import FIELD_TYPES, FieldProfileSettings, field_profile
-from economics.concepts import DevelopmentConcept, compare_concepts
-from economics.value_of_information import evpi_from_payoffs, evsi_from_signals
-from economics.periods import expand_profile
 from economics.decks_v2 import named_decks, select_deck
-from economics.reserves import reserves_profile
-from economics.analysis_studio import curve as studio_curve
-from economics.uncertainty_v2 import diagnostics as uncertainty_diagnostics
-from economics.fiscal_v2 import government_take
 from economics.reporting import decision_report_text
-from economics.portfolio import snapshot, dumps_snapshots
+from economics.portfolio import snapshot
 from economics.project_io import dumps_project, loads_project, load_profile_table, validate_profile_table
-from economics.exploration import DiscoveryCase, prospect_emv, discovery_distribution
-from economics.assurance import model_health
+from economics.workflow import input_key, run_all
+
+# Preserve model-widget values while their input sheet is not rendered.
+for state_key in list(st.session_state):
+    if state_key.startswith(('assump_', 'setting_', 'input_')) and not state_key.startswith('input_editor_'):
+        st.session_state[state_key] = st.session_state[state_key]
 
 st.set_page_config(page_title="NCS Economics Workbench", page_icon="🌊", layout="wide")
 
@@ -107,19 +98,8 @@ def apply_theme(name):
         .ncs-sub {font-size:.95rem; line-height:1.5;}
         </style>""", unsafe_allow_html=True)
 
-# Cache canonical results, not unit-specific presentation. All model inputs remain
-# part of Streamlit's cache key, so edits invalidate the affected analyses.
-calculate_cashflow = st.cache_data(show_spinner=False, max_entries=32)(calculate_cashflow)
-metrics = st.cache_data(show_spinner=False, max_entries=32)(metrics)
-breakeven_oil_price = st.cache_data(show_spinner=False, max_entries=32)(breakeven_oil_price)
-minimum_economic_volume = st.cache_data(show_spinner=False, max_entries=32)(minimum_economic_volume)
-breakeven_factor = st.cache_data(show_spinner=False, max_entries=32)(breakeven_factor)
-breakeven_table = st.cache_data(show_spinner=False, max_entries=32)(breakeven_table)
-extended_breakeven_suite = st.cache_data(show_spinner=False, max_entries=32)(extended_breakeven_suite)
-tornado = st.cache_data(show_spinner=False, max_entries=32)(tornado)
-sensitivity_curve = st.cache_data(show_spinner=False, max_entries=32)(sensitivity_curve)
-spider = st.cache_data(show_spinner=False, max_entries=32)(spider)
-evaluate_scenarios = st.cache_data(show_spinner=False, max_entries=32)(evaluate_scenarios)
+# Only the explicit Run action evaluates the canonical input snapshot.
+run_all = st.cache_data(show_spinner=False, max_entries=8)(run_all)
 
 
 def render_chart(figure, **kwargs):
@@ -169,12 +149,20 @@ if 'market_deck' not in st.session_state: st.session_state.market_deck = default
 if '_pending_project_import' in st.session_state:
     loaded = st.session_state.pop('_pending_project_import')
     st.session_state.profile = validate_profile_table(loaded['profile'])
+    for key in list(st.session_state):
+        if key.startswith(('assump_', 'setting_', 'input_cutoff_', 'input_uncertainty_', 'input_exploration_')):
+            del st.session_state[key]
+    for key in ('scenario_table', 'concept_table', 'decision_tree'):
+        st.session_state.pop(key, None)
+    la = loaded.get('assumptions', {})
+    st.session_state.market_deck = default_market_deck(
+        st.session_state.profile.year, la.get('oil_price_usd_bbl', 75.),
+        la.get('gas_price_usd_sm3', .35), la.get('usd_nok', 10.5))
     if loaded.get('market_deck') is not None: st.session_state.market_deck = pd.DataFrame(loaded['market_deck'])
     if loaded.get('scenarios') is not None: st.session_state.scenario_table = pd.DataFrame(loaded['scenarios'])
     if loaded.get('decision_tree') is not None: st.session_state.decision_tree = loaded['decision_tree']
     if loaded.get('concepts') is not None: st.session_state.concept_table = pd.DataFrame(loaded['concepts'])
     st.session_state.snapshots = loaded.get('snapshots', [])
-    la = loaded.get('assumptions', {})
     ls = loaded.get('settings', {})
     amap = {'oil_price_usd_bbl':'assump_oil','gas_price_usd_sm3':'assump_gas','usd_nok':'assump_fx','money_basis':'assump_money_basis','base_year':'assump_base_year','discount_rate_basis':'assump_rate_basis','tax_mode':'setting_fiscal_engine'}
     for src, dst in amap.items():
@@ -186,17 +174,30 @@ if '_pending_project_import' in st.session_state:
     if 'cost_escalation' in la: st.session_state.assump_cost_esc_pct = float(la['cost_escalation'])*100
     if 'time_resolution' in ls: st.session_state.setting_resolution = ls['time_resolution']
     if 'capex_phasing' in ls: st.session_state.setting_capex_phasing = ls['capex_phasing']
+    if 'use_deck' in ls: st.session_state.setting_use_deck = ls['use_deck']
+    for key, value in ls.get('cutoff', {}).items():
+        if value is not None:
+            st.session_state[f'input_cutoff_{key}'] = value
+    for key, value in ls.get('uncertainty', asdict(Uncertainty())).items():
+        st.session_state[f'input_uncertainty_{key}'] = value
+    st.session_state.input_iterations = ls.get('iterations', 2000)
+    st.session_state.input_seed = ls.get('seed', 42)
+    for key, value in ls.get('exploration', {'cos':.3, 'dry':900., 'small':1500., 'large':12000.}).items():
+        st.session_state[f'input_exploration_{key}'] = value
+    st.session_state.pop('analysis_results', None)
+    st.session_state.editor_revision = st.session_state.get('editor_revision', 0) + 1
     if ls.get('generator') is not None:
         st.session_state.generator = ls['generator']
     else:
         st.session_state.pop('generator', None)
     for key in list(st.session_state):
-        if key.startswith('gen_input_'):
+        if key.startswith(('gen_input_', 'input_sigma_')):
             del st.session_state[key]
 
 years = sorted(st.session_state.profile.year.astype(int).unique().tolist())
 
 PAGES = [
+    'Input Data',
     'Dashboard',
     'Production & Economics',
     'Sensitivity & Breakeven',
@@ -220,6 +221,24 @@ with st.container(key='module_navigation'):
 page = st.session_state.active_page
 
 with st.sidebar:
+    st.subheader('Display units')
+    money_unit = st.selectbox('Money', ['MNOK','BNOK','kNOK','NOK'], key='sel_money_unit')
+    oil_unit = st.selectbox('Oil volume', ['MMbbl','kbbl','MSm3 oil','bbl'], key='sel_oil_unit')
+    gas_unit = st.selectbox('Gas volume', ['MSm3','BCM','MMboe','kSm3','Sm3'], key='sel_gas_unit')
+    st.caption('Display changes do not require a new analysis run.')
+
+if page == 'Input Data':
+    st.subheader('Input Data')
+    st.info('Prepare inputs below, then select Run all analyses. Model edits hide results until the next successful run.')
+    run_controls = st.container()
+
+if page == 'Input Data':
+    assumption_panel = st.expander('1. Case assumptions, fiscal settings & economic conventions', expanded=True)
+else:
+    assumption_panel = None
+
+if assumption_panel is not None:
+  with assumption_panel:
     st.header('Case assumptions')
     oil = st.number_input('Oil price (USD/bbl)', 0.0, 300.0, 75.0, 1.0, key='assump_oil')
     gas = st.number_input('Gas price (USD/Sm³)', 0.0, 5.0, 0.35, .01, key='assump_gas')
@@ -238,22 +257,17 @@ with st.sidebar:
     else:
         oil_esc = gas_esc = cost_esc = 0.0
     st.divider()
-    st.subheader('Display units')
-    money_unit = st.selectbox('Money', ['MNOK','BNOK','kNOK','NOK'], key='sel_money_unit')
-    oil_unit = st.selectbox('Oil volume', ['MMbbl','kbbl','MSm3 oil','bbl'], key='sel_oil_unit')
-    gas_unit = st.selectbox('Gas volume', ['MSm3','BCM','MMboe','kSm3','Sm3'], key='sel_gas_unit')
-    st.caption('Display conversions adapt tables and charts. Internal calculation engine uses canonical units (MNOK, MMbbl, MSm³).')
     use_deck = st.toggle('Use annual market deck', value=True, help='Use editable annual oil, gas and FX curves instead of flat assumptions.', key='setting_use_deck')
     st.divider()
     st.subheader('Economic cutoff')
     st.caption('Cutoff rate inputs use canonical MMbbl and MSm3 per model period.')
-    cutoff_mode = st.selectbox('Cutoff rule',['none','hard','negative_ocf','economic_limit'],format_func=lambda x:{'none':'None','hard':'Hard cutoff','negative_ocf':'Negative operating CF','economic_limit':'Economic limit / look-ahead'}[x])
-    hard_year = st.number_input('Hard boundary / cutoff year',int(min(years)),int(max(years)+20),int(max(years)),1)
-    neg_periods = st.number_input('Consecutive negative periods',1,10,2,1)
-    lookahead = st.number_input('Economic-limit look-ahead periods',1,10,3,1)
-    min_oil = st.number_input('Minimum oil rate (MMbbl/period)',0.0,100.0,0.0,.1)
-    min_gas = st.number_input('Minimum gas rate (MSm³/period)',0.0,10000.0,0.0,10.0)
-    decom_lag = st.number_input('Decommissioning lag (periods)',0,10,1,1)
+    cutoff_mode = st.selectbox('Cutoff rule',['none','hard','negative_ocf','economic_limit'],format_func=lambda x:{'none':'None','hard':'Hard cutoff','negative_ocf':'Negative operating CF','economic_limit':'Economic limit / look-ahead'}[x], key='input_cutoff_mode')
+    hard_year = st.number_input('Hard boundary / cutoff year',1900,2300,int(max(years)),1, key='input_cutoff_hard_cutoff_year')
+    neg_periods = st.number_input('Consecutive negative periods',1,10,2,1,key='input_cutoff_consecutive_negative_periods')
+    lookahead = st.number_input('Economic-limit look-ahead periods',1,10,3,1,key='input_cutoff_lookahead_periods')
+    min_oil = st.number_input('Minimum oil rate (MMbbl/period)',0.0,100.0,0.0,.1,key='input_cutoff_minimum_oil_mmbbl')
+    min_gas = st.number_input('Minimum gas rate (MSm³/period)',0.0,10000.0,0.0,10.0,key='input_cutoff_minimum_gas_msm3')
+    decom_lag = st.number_input('Decommissioning lag (periods)',0,10,1,1,key='input_cutoff_decom_lag_periods')
     st.divider()
     st.subheader('Model resolution')
     time_resolution = st.selectbox('Cash-flow resolution',['annual','quarterly','monthly'],format_func=str.title,key='setting_resolution')
@@ -262,7 +276,22 @@ with st.sidebar:
     st.info('Fiscal calculations remain an analytical project-level model; validate vintage/company-specific tax treatment before investment decisions.')
     st.markdown('<div class="ncs-notice"><b>Made by Merouane Hamdani</b><br>For educational purposes only — non-commercial.<br><br>Not investment, tax, legal, reserves, or engineering advice.</div>', unsafe_allow_html=True)
 
-# Build assumptions and cashflow
+# Read persisted canonical controls on all result sheets.
+oil = st.session_state.get('assump_oil', 75.)
+gas = st.session_state.get('assump_gas', .35)
+fx = st.session_state.get('assump_fx', 10.5)
+disc = st.session_state.get('assump_disc_pct', 8.) / 100
+money_basis = st.session_state.get('assump_money_basis', 'real')
+base_year = st.session_state.get('assump_base_year', int(years[0]))
+inflation = st.session_state.get('assump_inflation_pct', 2.5) / 100
+rate_basis = st.session_state.get('assump_rate_basis', 'real')
+oil_esc = st.session_state.get('assump_oil_esc_pct', 2.5) / 100 if money_basis == 'nominal' else 0.
+gas_esc = st.session_state.get('assump_gas_esc_pct', 2.5) / 100 if money_basis == 'nominal' else 0.
+cost_esc = st.session_state.get('assump_cost_esc_pct', 2.5) / 100 if money_basis == 'nominal' else 0.
+fiscal_engine = st.session_state.get('setting_fiscal_engine', 'ncs_v2')
+use_deck = st.session_state.get('setting_use_deck', True)
+time_resolution = st.session_state.get('setting_resolution', 'annual')
+capex_phasing = st.session_state.get('setting_capex_phasing', 'even')
 a = Assumptions(
     oil, gas, fx, disc, tax_mode=fiscal_engine, money_basis=money_basis,
     base_year=int(base_year), general_inflation=inflation,
@@ -271,48 +300,14 @@ a = Assumptions(
 )
 active_deck = st.session_state.market_deck if use_deck else None
 cutoff = CutoffSettings(
-    mode=cutoff_mode,
-    hard_cutoff_year=int(hard_year) if cutoff_mode in ('hard','negative_ocf','economic_limit') else None,
-    consecutive_negative_periods=int(neg_periods),
-    lookahead_periods=int(lookahead),
-    minimum_oil_mmbbl=float(min_oil),
-    minimum_gas_msm3=float(min_gas),
-    decom_lag_periods=int(decom_lag)
+    **{key: st.session_state.get(f'input_cutoff_{key}', value)
+       for key, value in asdict(CutoffSettings()).items()}
 )
-active_profile = expand_profile(st.session_state.profile, time_resolution, capex_phasing)
+if cutoff.mode == 'none':
+    cutoff.hard_cutoff_year = None
 analysis_view = None
 if page == 'Sensitivity & Breakeven':
-    analysis_view = st.radio('Analysis view', ['Sensitivity & Tornado', 'Breakeven Analysis', 'Market Decks'], horizontal=True, key='analysis_view')
-cf = calculate_cashflow(active_profile, a, active_deck, cutoff)
-m = metrics(cf)
-model_key = hashlib.sha256(json.dumps({
-    'profile': active_profile.to_json(double_precision=15),
-    'assumptions': a.__dict__,
-    'deck': None if active_deck is None else active_deck.to_json(double_precision=15),
-    'cutoff': cutoff.__dict__,
-}, sort_keys=True).encode()).hexdigest()
-mc_matches_model = st.session_state.get('mc_model_key') == model_key
-
-# Breakeven calculations evaluated consistently on active_profile
-show_breakeven = page == 'Dashboard' or analysis_view == 'Breakeven Analysis'
-be = breakeven_oil_price(active_profile, a, cutoff=cutoff) if not use_deck and show_breakeven else None
-deck_be = breakeven_factor(active_profile, a, 'Oil price', active_deck, cutoff=cutoff) if use_deck and show_breakeven else None
-mev = minimum_economic_volume(active_profile, a, active_deck, cutoff) if show_breakeven else None
-
-# Compute equivalent dollar per bbl and dollar per Sm3 when deck is active
-equiv_oil_be_usd_bbl = None
-equiv_oil_be_usd_sm3 = None
-if use_deck and deck_be is not None:
-    vol_weights = cf.get('oil_mmbbl', pd.Series(0, index=cf.index))
-    if vol_weights.sum() > 0 and 'oil_price_usd_bbl' in cf.columns:
-        w_oil_price = float((cf['oil_price_usd_bbl'] * vol_weights).sum() / vol_weights.sum())
-    else:
-        w_oil_price = float(st.session_state.market_deck['oil_usd_bbl'].mean())
-    equiv_oil_be_usd_bbl = w_oil_price * deck_be
-    equiv_oil_be_usd_sm3 = equiv_oil_be_usd_bbl * BBL_PER_SM3
-elif be is not None:
-    equiv_oil_be_usd_bbl = be
-    equiv_oil_be_usd_sm3 = be * BBL_PER_SM3
+    analysis_view = st.radio('Analysis view', ['Sensitivity & Tornado', 'Breakeven Analysis'], horizontal=True, key='analysis_view')
 
 # Shared scenario state
 if 'scenario_table' not in st.session_state:
@@ -323,19 +318,62 @@ if 'scenario_table' not in st.session_state:
         {'name':'1-year delay','oil_factor':1.0,'gas_factor':1.0,'capex_factor':1.0,'opex_factor':1.0,'production_factor':1.0,'start_delay_years':1},
     ])
 
-def current_scenarios():
-    out = []
-    for row in st.session_state.scenario_table.to_dict('records'):
-        try: out.append(Scenario(**row))
-        except (TypeError, ValueError): pass
-    return out
+if 'concept_table' not in st.session_state:
+    st.session_state.concept_table = pd.DataFrame([
+        {'name':'Subsea tie-back','capex_factor':.75,'opex_factor':.85,'production_factor':.90,'schedule_shift_years':-1},
+        {'name':'FPSO','capex_factor':1.,'opex_factor':1.,'production_factor':1.,'schedule_shift_years':0},
+        {'name':'Fixed platform','capex_factor':1.30,'opex_factor':.90,'production_factor':1.12,'schedule_shift_years':1},
+    ])
+if 'decision_tree' not in st.session_state:
+    st.session_state.decision_tree = {
+        'nodes':[
+            {'id':'n1','type':'decision','label':'Development concept','x':50,'y':220},
+            {'id':'n2','type':'chance','label':'Resource outcome','x':300,'y':100},
+            {'id':'n3','type':'outcome','label':'High','scenario_key':'High resource','value':0,'x':560,'y':40},
+            {'id':'n4','type':'outcome','label':'Low','scenario_key':'Low resource','value':0,'x':560,'y':220},
+            {'id':'n5','type':'outcome','label':'Base','scenario_key':'Base','value':0,'x':300,'y':390},
+        ],
+        'edges':[
+            {'id':'e1','source':'n1','target':'n2','label':'Develop'},
+            {'id':'e2','source':'n2','target':'n3','probability':.35},
+            {'id':'e3','source':'n2','target':'n4','probability':.65},
+            {'id':'e4','source':'n1','target':'n5','label':'Base'},
+        ],
+    }
 
-scenario_results = pd.DataFrame(columns=['scenario', 'npv_mnok', 'irr', 'payback_year'])
-scenario_cfs = {}
-if page == 'Project & Export':
-    scenarios = current_scenarios()
-    scenario_results, scenario_cfs = evaluate_scenarios(active_profile, a, scenarios, active_deck, cutoff)
-scenario_values = dict(zip(scenario_results['scenario'], scenario_results['npv_mnok'])) if not scenario_results.empty else {}
+
+def draft_inputs():
+    return {
+        'profile':st.session_state.profile, 'assumptions':asdict(a),
+        'market_deck':st.session_state.market_deck, 'use_deck':use_deck,
+        'cutoff':asdict(cutoff), 'resolution':time_resolution, 'capex_phasing':capex_phasing,
+        'scenarios':st.session_state.scenario_table, 'concepts':st.session_state.concept_table,
+        'uncertainty':{key:st.session_state.get(f'input_uncertainty_{key}', value)
+                       for key,value in asdict(Uncertainty()).items()},
+        'iterations':st.session_state.get('input_iterations', 2000),
+        'seed':st.session_state.get('input_seed', 42), 'tree':st.session_state.decision_tree,
+        'exploration':{key:st.session_state.get(f'input_exploration_{key}', value)
+                       for key,value in {'cos':.3,'dry':900.,'small':1500.,'large':12000.}.items()},
+        'generator':st.session_state.get('generator'),
+    }
+
+
+result = st.session_state.get('analysis_results')
+if page != 'Input Data':
+    if result is None or result['key'] != input_key(draft_inputs()) or st.session_state.get('input_errors'):
+        st.warning('Results are hidden. Review Input Data and click Run all analyses.')
+        st.button('Go to Input Data', on_click=select_module, args=('Input Data',))
+        st.stop()
+    active_profile, cf, m = result['profile'], result['cashflow'], result['metrics']
+    be, deck_be, mev = result['be'], result['deck_be'], result['mev']
+    scenario_results, scenario_values = result['scenarios'], result['scenario_values']
+    u = Uncertainty(**draft_inputs()['uncertainty'])
+    equiv_oil_be_usd_bbl = be
+    if deck_be is not None:
+        weights = cf.oil_mmbbl
+        price = float((cf.oil_price_usd_bbl * weights).sum() / weights.sum()) if weights.sum() > 0 else float(active_deck.oil_usd_bbl.mean())
+        equiv_oil_be_usd_bbl = price * deck_be
+    equiv_oil_be_usd_sm3 = None if equiv_oil_be_usd_bbl is None else equiv_oil_be_usd_bbl * BBL_PER_SM3
 
 # Conversion factors
 mf = money_factor(money_unit)
@@ -344,6 +382,20 @@ gf = gas_factor(gas_unit)
 
 def display_table(frame):
     return display_frame(frame, money_unit, oil_unit, gas_unit)
+
+
+def edit_inputs(name, frame, units=''):
+    """Keep the editor's source stable while its edit delta is active."""
+    key = f'input_editor_{name}_{st.session_state.get("editor_revision", 0)}_{units}'
+    source_key, widget_key = f'input_source_{name}', f'input_widget_{name}'
+    if st.session_state.get(widget_key) != key or key not in st.session_state:
+        previous = st.session_state.get(widget_key)
+        if previous is not None:
+            st.session_state.pop(previous, None)
+        st.session_state[source_key] = frame.copy(deep=True)
+        st.session_state[widget_key] = key
+    return st.data_editor(st.session_state[source_key], key=key,
+                          use_container_width=True, num_rows='dynamic')
 
 
 def money_card(container, label, value, description):
@@ -445,12 +497,11 @@ if page == 'Dashboard':
 # ==============================================================================
 # 2. PRODUCTION & ECONOMICS
 # ==============================================================================
-elif page == 'Production & Economics':
-    tab_profile, tab_gen, tab_cashflow, tab_bridges = st.tabs([
+elif page == 'Input Data':
+    input_errors = []
+    tab_profile, tab_gen = st.tabs([
         'Production & Cost Profile',
         'Profile Generator & Concepts',
-        'Cash Flow Statement',
-        'Revenue & Tax Bridges'
     ])
     
     with tab_profile:
@@ -474,25 +525,21 @@ elif page == 'Production & Economics':
         view_cols = ['year', oil_col_name, gas_col_name, capex_col_name, opex_col_name, decom_col_name]
         disp_df = disp_df[view_cols]
         
-        with st.form('profile_manual_form'):
-            edited_profile = st.data_editor(disp_df, use_container_width=True, num_rows='dynamic', key=f'profile_editor_{money_unit}_{oil_unit}_{gas_unit}')
-            apply_manual = st.form_submit_button('Apply manual profile', type='primary')
-            
-        if apply_manual:
-            try:
-                # Convert back from display units to canonical units
-                conv_df = edited_profile.copy()
-                conv_df['oil_mmbbl'] = conv_df[oil_col_name] / of
-                conv_df['gas_msm3'] = conv_df[gas_col_name] / gf
-                conv_df['capex_mnok'] = conv_df[capex_col_name] / mf
-                conv_df['opex_mnok'] = conv_df[opex_col_name] / mf
-                conv_df['decom_mnok'] = conv_df[decom_col_name] / mf
-                canonical = conv_df[['year', 'oil_mmbbl', 'gas_msm3', 'capex_mnok', 'opex_mnok', 'decom_mnok']]
-                st.session_state.profile = validate_profile_table(canonical)
-                st.success(f'Manual profile applied successfully (converted from {oil_unit}, {gas_unit}, {money_unit} to canonical units).')
-                st.rerun()
-            except (TypeError, ValueError) as exc:
-                st.error(f'Profile validation error: {exc}')
+        edited_profile = edit_inputs('profile', disp_df, f'{money_unit}_{oil_unit}_{gas_unit}')
+        try:
+            conv_df = edited_profile.copy()
+            conv_df['oil_mmbbl'] = conv_df[oil_col_name] / of
+            conv_df['gas_msm3'] = conv_df[gas_col_name] / gf
+            conv_df['capex_mnok'] = conv_df[capex_col_name] / mf
+            conv_df['opex_mnok'] = conv_df[opex_col_name] / mf
+            conv_df['decom_mnok'] = conv_df[decom_col_name] / mf
+            canonical = validate_profile_table(conv_df[['year', 'oil_mmbbl', 'gas_msm3', 'capex_mnok', 'opex_mnok', 'decom_mnok']])
+            if canonical.empty:
+                raise ValueError('Add at least one production/cost profile row')
+            st.session_state.profile = canonical
+        except (TypeError, ValueError) as exc:
+            input_errors.append(f'Profile validation error: {exc}')
+            st.error(input_errors[-1])
                 
         c_up, c_dn = st.columns(2)
         with c_up:
@@ -503,6 +550,7 @@ elif page == 'Production & Economics':
                     st.dataframe(display_table(imported_profile), use_container_width=True, hide_index=True)
                     if st.button('Apply imported profile', type='primary', key='apply_profile_import'):
                         st.session_state.profile = imported_profile
+                        st.session_state.editor_revision = st.session_state.get('editor_revision', 0) + 1
                         st.success('Imported profile applied.')
                         st.rerun()
                 except (TypeError, ValueError, ImportError) as exc:
@@ -597,6 +645,7 @@ elif page == 'Production & Economics':
             generated = field_profile(FieldProfileSettings(**settings))
         except ValueError as exc:
             st.error(f'Cannot generate profile: {exc}')
+            input_errors.append(f'Cannot generate profile: {exc}')
         if generated is not None:
             render_chart(production_chart(generated, oil_unit, gas_unit, 'Generated production profile'), use_container_width=True)
             s1, s2, s3 = st.columns(3)
@@ -618,22 +667,20 @@ elif page == 'Production & Economics':
                                    'generated_profile.csv', 'text/csv')
             if st.button('Use generated profile as project profile', key='apply_generated_profile'):
                 st.session_state.profile = validate_profile_table(generated)
+                st.session_state.editor_revision = st.session_state.get('editor_revision', 0) + 1
                 st.rerun()
 
         st.divider()
         st.subheader('Development concept comparison')
-        if 'concept_table' not in st.session_state:
-            st.session_state.concept_table = pd.DataFrame([
-                {'name':'Subsea tie-back','capex_factor':.75,'opex_factor':.85,'production_factor':.90,'schedule_shift_years':-1},
-                {'name':'FPSO','capex_factor':1.0,'opex_factor':1.0,'production_factor':1.0,'schedule_shift_years':0},
-                {'name':'Fixed platform','capex_factor':1.30,'opex_factor':.90,'production_factor':1.12,'schedule_shift_years':1}
-            ])
-        st.session_state.concept_table = st.data_editor(st.session_state.concept_table, num_rows='dynamic', use_container_width=True, key='concept_editor')
-        concepts = []
-        for r in st.session_state.concept_table.to_dict('records'):
-            try: concepts.append(DevelopmentConcept(**r))
-            except (TypeError, ValueError): pass
-        concept_results = compare_concepts(active_profile, a, concepts, active_deck, cutoff) if concepts else pd.DataFrame()
+        st.session_state.concept_table = edit_inputs('concept', st.session_state.concept_table)
+        st.caption('Concept results are updated by Run all analyses and shown in Production & Economics.')
+
+elif page == 'Production & Economics':
+    tab_concepts, tab_cashflow, tab_bridges = st.tabs([
+        'Development Concepts', 'Cash Flow Statement', 'Revenue & Tax Bridges',
+    ])
+    with tab_concepts:
+        concept_results = result['concepts']
         if not concept_results.empty:
             concept_display = display_table(concept_results)
             st.dataframe(concept_display, use_container_width=True, hide_index=True)
@@ -677,7 +724,7 @@ elif page == 'Production & Economics':
 elif page == 'Sensitivity & Breakeven':
     if analysis_view == 'Sensitivity & Tornado':
         st.subheader('Tornado & single-variable sensitivity')
-        tdf, base_npv = tornado(active_profile, a, market_deck=active_deck, cutoff=cutoff)
+        tdf, base_npv = result['tornado']
         fig = go.Figure()
         fig.add_bar(y=tdf['variable'], x=tdf['low_delta']*mf, orientation='h', name='Low case (-20%)')
         fig.add_bar(y=tdf['variable'], x=tdf['high_delta']*mf, orientation='h', name='High case (+20%)')
@@ -687,7 +734,7 @@ elif page == 'Sensitivity & Breakeven':
         c1, c2 = st.columns(2)
         with c1:
             variable = st.selectbox('Sensitivity curve variable', ['Oil price','Gas price','Production','CAPEX','OPEX'])
-            curve = sensitivity_curve(active_profile, a, variable, market_deck=active_deck, cutoff=cutoff)
+            curve = result['curves'][variable].copy()
             curve['npv_display'] = curve['npv_mnok'] * mf
             figc = px.line(curve, x='change_pct', y='npv_display', markers=True, title=f'{variable} sensitivity curve')
             figc.add_hline(y=0, line_dash='dash')
@@ -696,7 +743,7 @@ elif page == 'Sensitivity & Breakeven':
             render_chart(figc, use_container_width=True)
         with c2:
             st.markdown('### NPV spider plot')
-            sp = spider(active_profile, a, active_deck, cutoff=cutoff)
+            sp = result['spider']
             sp = display_table(sp)
             figsp = px.line(sp, x='change_pct', y=f'npv ({money_unit})', color='variable', markers=True, title=f'Spider sensitivity ({money_unit})')
             figsp.add_hline(y=0, line_dash='dash')
@@ -709,7 +756,7 @@ elif page == 'Sensitivity & Breakeven':
         b1, b2 = st.columns(2)
         with b1:
             if use_deck:
-                deck_table = breakeven_table(active_profile, a, active_deck, cutoff=cutoff)
+                deck_table = result['breakevens']
                 oil_row = deck_table[deck_table['variable'] == 'Oil price'].iloc[0]
                 if pd.isna(oil_row['breakeven_factor']):
                     st.metric('Oil-deck breakeven', 'Outside search range')
@@ -728,13 +775,8 @@ elif page == 'Sensitivity & Breakeven':
                     f"${be*BBL_PER_SM3:,.2f}/Sm³" if be is not None else None
                 )
                 if be is not None:
-                    prices = np.linspace(max(0, be*.45), max(be*1.65, oil*1.4, 20), 31)
-                    rows = []
-                    for price in prices:
-                        aa = Assumptions(**{**a.__dict__, 'oil_price_usd_bbl': float(price)})
-                        rows.append({'oil_price': price, 'npv': metrics(calculate_cashflow(active_profile, aa, cutoff=cutoff))['npv_mnok'] * mf})
-                    bedf = pd.DataFrame(rows)
-                    figb = px.line(bedf, x='oil_price', y='npv', title='Oil-price breakeven curve')
+                    bedf = display_table(result['price_curve'])
+                    figb = px.line(bedf, x='oil_price', y=f'npv ({money_unit})', title='Oil-price breakeven curve')
                     figb.add_hline(y=0, line_dash='dash')
                     figb.add_vline(x=be, line_dash='dash')
                     figb.update_xaxes(title='Oil price (USD/bbl)')
@@ -744,36 +786,14 @@ elif page == 'Sensitivity & Breakeven':
 
         with b2:
             st.markdown('### Multi-variable breakeven table')
-            bet = breakeven_table(active_profile, a, active_deck, cutoff=cutoff)
+            bet = result['breakevens']
             st.dataframe(bet.style.format({'breakeven_factor':'{:.3f}','breakeven_change_pct':'{:.1f}%'}), use_container_width=True, hide_index=True)
             available = bet.dropna(subset=['breakeven_change_pct'])
             if not available.empty:
                 render_chart(px.bar(available, x='variable', y='breakeven_change_pct', title='Input change required to reach NPV = 0', labels={'breakeven_change_pct':'Change from base (%)'}), use_container_width=True)
 
         st.markdown('### Extended breakeven suite')
-        st.dataframe(extended_breakeven_suite(active_profile, a, active_deck, cutoff), use_container_width=True, hide_index=True)
-
-    elif analysis_view == 'Market Decks':
-        st.subheader('Market decks')
-        st.caption('Edit annual oil, gas and FX assumptions. When “Use annual market deck” is enabled, these curves drive the core cash-flow calculation.')
-        deck_issues = validate_market_deck(st.session_state.market_deck)
-        st.session_state.market_deck = st.data_editor(st.session_state.market_deck, use_container_width=True, num_rows='dynamic', key='market_deck_editor')
-        if deck_issues:
-            for issue in deck_issues: st.warning(issue)
-        else:
-            md = st.session_state.market_deck.copy()
-            figm = go.Figure()
-            figm.add_trace(go.Scatter(x=md.year, y=md.oil_usd_bbl, name='Oil USD/bbl'))
-            figm.add_trace(go.Scatter(x=md.year, y=md.usd_nok, name='USD/NOK', yaxis='y2'))
-            figm.update_layout(title='Oil price and FX deck', yaxis_title='USD/bbl', yaxis2=dict(title='USD/NOK', overlaying='y', side='right'))
-            render_chart(figm, use_container_width=True)
-            render_chart(px.line(md, x='year', y='gas_usd_sm3', markers=True, title='Gas price deck (USD/Sm³)'), use_container_width=True)
-
-        st.markdown('### Named reference decks')
-        decks = named_decks(sorted(st.session_state.profile.year.astype(int).unique()), oil, gas, fx)
-        deck_name = st.radio('Preset deck', ['Low', 'Base', 'High'], horizontal=True, key='v10_deck')
-        selected_deck = select_deck(decks, deck_name)
-        render_chart(px.line(selected_deck, x='year', y=['oil_usd_bbl','usd_nok'], markers=True, title=f'{deck_name} reference deck'), use_container_width=True)
+        st.dataframe(result['extended_breakevens'], use_container_width=True, hide_index=True)
 
 
 # ==============================================================================
@@ -787,12 +807,8 @@ elif page == 'Scenarios & Uncertainty':
     ])
     
     with tab_scen:
-        st.subheader('Scenario manager')
-        st.caption('Define deterministic scenario multipliers modifying production, CAPEX, OPEX, and schedule.')
-        st.session_state.scenario_table = st.data_editor(st.session_state.scenario_table, num_rows='dynamic', use_container_width=True, key='scenario_editor')
-        scenarios = current_scenarios()
-        scenario_results, scenario_cfs = evaluate_scenarios(active_profile, a, scenarios, active_deck, cutoff)
-        scenario_values = dict(zip(scenario_results['scenario'], scenario_results['npv_mnok'])) if not scenario_results.empty else {}
+        st.subheader('Scenario comparison')
+        st.caption('Results from the last successful Run all analyses. Edit scenarios in Input Data.')
         scenario_display = display_table(scenario_results)
         st.dataframe(scenario_display, use_container_width=True, hide_index=True)
         if not scenario_results.empty:
@@ -800,45 +816,10 @@ elif page == 'Scenarios & Uncertainty':
 
     with tab_mc:
         st.subheader('Monte Carlo simulation')
-        st.caption('Gaussian copula sampling over correlated price, cost, and reservoir distributions.')
-        dists = ['lognormal','normal','triangular']
-        c1, c2, c3, c4, c5 = st.columns(5)
-        oil_sig = c1.number_input('Oil σ (%)', 0., 100., 20.) / 100
-        oil_dist = c1.selectbox('Oil distribution', dists, key='oil_dist')
-        gas_sig = c2.number_input('Gas σ (%)', 0., 100., 20.) / 100
-        gas_dist = c2.selectbox('Gas distribution', dists, key='gas_dist')
-        cap_sig = c3.number_input('CAPEX σ (%)', 0., 100., 20.) / 100
-        cap_dist = c3.selectbox('CAPEX distribution', dists, key='cap_dist')
-        op_sig = c4.number_input('OPEX σ (%)', 0., 100., 15.) / 100
-        op_dist = c4.selectbox('OPEX distribution', dists, key='op_dist')
-        prod_sig = c5.number_input('Production σ (%)', 0., 100., 15.) / 100
-        prod_dist = c5.selectbox('Production distribution', dists, key='prod_dist')
-        
-        r1, r2, r3 = st.columns(3)
-        price_corr = r1.slider('Oil ↔ gas correlation', -.9, .9, .35, .05)
-        cost_corr = r2.slider('CAPEX ↔ OPEX correlation', -.9, .9, .40, .05)
-        resource_cost_corr = r3.slider('Production ↔ CAPEX correlation', -.9, .9, .15, .05)
-        
-        u = Uncertainty(oil_sig, gas_sig, cap_sig, op_sig, prod_sig, oil_dist, gas_dist, cap_dist, op_dist, prod_dist, price_corr, cost_corr, resource_cost_corr)
-        iterations = st.slider('Iterations', 500, 10000, 2000, 500)
-        seed = st.number_input('Random seed', 0, 999999, 42)
-        mc_inputs_key = (repr(u), iterations, int(seed))
-        
-        if st.button('Run Monte Carlo', type='primary', key='run_mc'):
-            with st.spinner('Evaluating correlated economic cases...'):
-                samples, factors = run_monte_carlo(active_profile, a, u, iterations, int(seed), return_factors=True, market_deck=active_deck, cutoff=cutoff)
-            st.session_state.mc_samples = samples
-            st.session_state.mc_factors = factors
-            st.session_state.mc_model_key = model_key
-            st.session_state.mc_inputs_key = mc_inputs_key
-            mc_matches_model = True
-            
-        mc_is_current = mc_matches_model and st.session_state.get('mc_inputs_key') == mc_inputs_key
-        if 'mc_samples' in st.session_state and not mc_is_current:
-            st.warning('Model or uncertainty inputs have changed. Run Monte Carlo again to update the results.')
-        if 'mc_samples' in st.session_state and mc_is_current:
-            samples = st.session_state.mc_samples
-            factors = st.session_state.get('mc_factors')
+        st.caption('Gaussian copula simulation updated by Run all analyses in Input Data.')
+        if result is not None:
+            samples = result['samples']
+            factors = result['factors']
             ms = mc_summary(samples)
             x1, x2, x3, x4, x5 = st.columns(5)
             money_card(x1, 'P10 (10th percentile / downside)', ms['P10'], '10th-percentile after-tax NPV.')
@@ -861,39 +842,14 @@ elif page == 'Scenarios & Uncertainty':
                 if factors is not None:
                     st.write('Realized sampled-factor correlation')
                     st.dataframe(factors.corr())
-        else:
-            st.info('Configure uncertainty inputs and click “Run Monte Carlo”.')
 
     with tab_tree:
         st.subheader('Decision tree + scenario economics')
-        default_tree = {
-            'nodes': [
-                {'id':'n1','type':'decision','label':'Development concept','x':50,'y':220},
-                {'id':'n2','type':'chance','label':'Resource outcome','x':300,'y':100},
-                {'id':'n3','type':'outcome','label':'High','scenario_key':'High resource','value':0,'x':560,'y':40},
-                {'id':'n4','type':'outcome','label':'Low','scenario_key':'Low resource','value':0,'x':560,'y':220},
-                {'id':'n5','type':'outcome','label':'Base','scenario_key':'Base','value':0,'x':300,'y':390}
-            ],
-            'edges': [
-                {'id':'e1','source':'n1','target':'n2','label':'Develop'},
-                {'id':'e2','source':'n2','target':'n3','probability':0.35},
-                {'id':'e3','source':'n2','target':'n4','probability':0.65},
-                {'id':'e4','source':'n1','target':'n5','label':'Base'}
-            ]
-        }
-        if 'decision_tree' not in st.session_state:
-            st.session_state.decision_tree = default_tree
-        edited = decision_tree(st.session_state.decision_tree, {k:v*mf for k,v in scenario_values.items()}, key='economic_decision_tree', money_unit=money_unit, money_factor=mf, theme=THEMES[theme_name])
-        if edited:
-            st.session_state.decision_tree = edited
-        try:
-            tr = evaluate_tree(st.session_state.decision_tree, scenario_values)
-            c1, c2 = st.columns(2)
-            money_card(c1, 'Current decision-tree value', tr['value'], 'Rolled-back value of the current decision tree.')
-            c2.write('Selected decision edges: ' + (', '.join(tr['selected_edges']) or '—'))
-            for w in tr['warnings']: st.warning(w)
-        except Exception as exc:
-            st.error(f'Tree evaluation error: {exc}')
+        st.caption('Edit the decision tree in Input Data, then run all analyses.')
+        tr = result['tree']
+        c1, c2 = st.columns(2)
+        money_card(c1, 'Current decision-tree value', tr['value'], 'Rolled-back value of the current decision tree.')
+        c2.write('Selected decision edges: ' + (', '.join(tr['selected_edges']) or '—'))
             
         with st.expander('Scenario values feeding outcome nodes'):
             st.dataframe(display_table(pd.DataFrame([{'scenario_key':k,'current_npv_mnok':v} for k,v in scenario_values.items()])), use_container_width=True, hide_index=True)
@@ -929,35 +885,20 @@ elif page == 'Project & Export':
                 st.session_state.get('decision_tree', {}),
                 {'author':'Merouane Hamdani','purpose':'Educational purposes only — non-commercial','app_version':'V12.3'},
                 st.session_state.market_deck, st.session_state.get('concept_table'),
-                {'time_resolution':time_resolution, 'capex_phasing':capex_phasing, 'cutoff':cutoff.__dict__,
-                 'generator':st.session_state.get('generator')},
+                {'time_resolution':time_resolution, 'capex_phasing':capex_phasing, 'cutoff':asdict(cutoff),
+                 'generator':st.session_state.get('generator'), 'use_deck':use_deck,
+                 'uncertainty':asdict(u), 'iterations':draft_inputs()['iterations'], 'seed':draft_inputs()['seed'],
+                 'exploration':draft_inputs()['exploration']},
                 st.session_state.snapshots
             )
             st.download_button('Save complete project (.json)', project_bytes, 'ncs_project.json', 'application/json')
         with c_dl2:
-            wb = excel_workbook(a, active_profile, cf, st.session_state.market_deck, scenario_results, st.session_state.get('mc_samples') if mc_matches_model else None, {'author':'Merouane Hamdani','purpose':'Educational purposes only — non-commercial','money_basis':money_basis,'display_money_unit':money_unit,'export_units':'Canonical MNOK / MMbbl / MSm3'})
+            wb = excel_workbook(a, active_profile, cf, st.session_state.market_deck, scenario_results, result['samples'], {'author':'Merouane Hamdani','purpose':'Educational purposes only — non-commercial','money_basis':money_basis,'display_money_unit':money_unit,'export_units':'Canonical MNOK / MMbbl / MSm3'})
             st.download_button('Download analysis workbook (.xlsx)', wb, 'ncs_economics_analysis.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             st.caption('Workbook, audit CSVs and project JSON retain canonical MNOK / MMbbl / MSm3 units for reproducibility.')
-            if 'mc_samples' in st.session_state and not mc_matches_model:
-                st.warning('Outdated Monte Carlo samples are excluded from this workbook. Re-run the simulation for this model.')
         with c_dl3:
             report = decision_report_text(project_name, m, cf.attrs.get('cutoff_year'), cf.attrs.get('cutoff_reason'), st.session_state.get('concept_table'))
             st.download_button('Download decision summary (.md)', report, 'investment_decision_summary.md', 'text/markdown')
-
-        st.divider()
-        st.subheader('Load existing project')
-        uploaded = st.file_uploader('Load project JSON', type=['json'], key='project_json_loader')
-        if uploaded is not None:
-            try:
-                loaded = loads_project(uploaded)
-                st.success(f"Project schema {loaded['schema_version']} validated.")
-                st.json({'metadata':loaded.get('metadata',{}),'settings':loaded.get('settings',{}),'snapshots':loaded.get('snapshots',[])})
-                if st.button('Apply loaded project', type='primary', key='apply_loaded_project'):
-                    loaded['profile'] = validate_profile_table(loaded['profile']).to_dict('records')
-                    st.session_state._pending_project_import = loaded
-                    st.rerun()
-            except Exception as e:
-                st.error(f'Could not load project: {e}')
 
     with tab_audit:
         st.subheader('Data & calculation audit')
@@ -985,18 +926,118 @@ elif page == 'Project & Export':
         e1, e2 = st.columns(2)
         with e1:
             st.markdown('### Exploration risking')
-            cos = st.slider('Geological chance of success (GCoS)', 0.01, 0.99, 0.30, 0.01)
-            st.caption('Exploration inputs use canonical MNOK; results below use the selected display unit.')
-            dry = st.number_input('Dry-hole cost (MNOK)', 0.0, 20000.0, 900.0, 50.0)
-            small = st.number_input('Small discovery development NPV (MNOK)', -50000.0, 100000.0, 1500.0, 100.0)
-            large = st.number_input('Large discovery development NPV (MNOK)', -50000.0, 200000.0, 12000.0, 250.0)
-            pe = prospect_emv(cos, dry, [DiscoveryCase('Small', .55, small), DiscoveryCase('Large', .45, large)])
+            pe = result['exploration']
             money_card(st, 'Risked exploration EMV', pe['risked_emv_mnok'], 'Expected monetary value weighted by geological chance of success.')
-            st.dataframe(display_table(pd.DataFrame(discovery_distribution(cos, dry, [DiscoveryCase('Small', .55, small), DiscoveryCase('Large', .45, large)]))), hide_index=True, use_container_width=True)
+            st.dataframe(display_table(result['discoveries']), hide_index=True, use_container_width=True)
         with e2:
             st.markdown('### Model health & assurance')
-            health = model_health(st.session_state.profile, active_deck, [.55,.45], {'cessation_year':cf.attrs.get('cutoff_year'),'decom_year':None}, recoverable_oil_mmbbl=float(st.session_state.profile.oil_mmbbl.sum())*1.05, money_basis=money_basis, discount_basis=rate_basis)
+            health = result['health']
             st.dataframe(pd.DataFrame(health), hide_index=True, use_container_width=True)
+
+if page == 'Input Data':
+    with st.expander('2. Market decks', expanded=False):
+        st.caption('Annual oil, gas and FX inputs. Editing these values does not run the model.')
+        st.session_state.market_deck = edit_inputs('market_deck', st.session_state.market_deck)
+        deck_issues = validate_market_deck(st.session_state.market_deck)
+        if use_deck:
+            for issue in deck_issues:
+                st.error(issue)
+                input_errors.append(issue)
+        decks = named_decks(sorted(st.session_state.profile.year.astype(int).unique()), oil, gas, fx)
+        deck_name = st.radio('Reference deck', ['Low', 'Base', 'High'], horizontal=True, key='input_reference_deck')
+        st.caption('Reference decks are illustrative. Apply one explicitly to replace the annual inputs.')
+        if st.button('Apply reference deck'):
+            st.session_state.market_deck = select_deck(decks, deck_name)
+            st.session_state.editor_revision = st.session_state.get('editor_revision', 0) + 1
+            st.rerun()
+    with st.expander('3. Scenarios & Monte Carlo inputs', expanded=False):
+        st.subheader('Scenario assumptions')
+        st.session_state.scenario_table = edit_inputs('scenario', st.session_state.scenario_table)
+        st.subheader('Monte Carlo configuration')
+        st.caption('All uncertainty settings are included in Run all analyses; no separate simulation run is needed.')
+        uncertainty_defaults = asdict(Uncertainty())
+        for column, (fluid, label) in zip(st.columns(5), [
+            ('oil','Oil'), ('gas','Gas'), ('capex','CAPEX'), ('opex','OPEX'), ('production','Production'),
+        ]):
+            sigma_name = {'oil':'oil_price_pct','gas':'gas_price_pct','capex':'capex_pct',
+                          'opex':'opex_pct','production':'production_pct'}[fluid]
+            key = f'input_uncertainty_{sigma_name}'
+            # Canonical sigmas are stored separately from percentage widgets.
+            percent_key = f'input_sigma_{fluid}'
+            if percent_key not in st.session_state:
+                st.session_state[percent_key] = st.session_state.get(key, uncertainty_defaults[sigma_name]) * 100
+            sigma = column.number_input(f'{label} sigma (%)', 0., 100., key=percent_key) / 100
+            st.session_state[key] = sigma
+            dist_key = f'input_uncertainty_{fluid}_distribution'
+            column.selectbox(f'{label} distribution', ['lognormal','normal','triangular'], key=dist_key)
+        for column, name, label in [
+            (st, 'price_correlation', 'Oil / gas correlation'),
+            (st, 'cost_correlation', 'CAPEX / OPEX correlation'),
+            (st, 'resource_cost_correlation', 'Production / CAPEX correlation'),
+        ]:
+            key = f'input_uncertainty_{name}'
+            if key not in st.session_state:
+                st.session_state[key] = uncertainty_defaults[name]
+            column.slider(label, -.9, .9, step=.05, key=key)
+        st.slider('Iterations', 500, 10000, 2000, 500, key='input_iterations')
+        st.number_input('Random seed', 0, 999999, 42, key='input_seed')
+    with st.expander('4. Decision-tree inputs', expanded=False):
+        st.caption('Scenario-linked outcomes are evaluated by Run all analyses. Editing the tree hides previous results.')
+        edited = decision_tree(st.session_state.decision_tree, {}, key=f'input_tree_{st.session_state.get("editor_revision", 0)}',
+                               money_unit=money_unit, money_factor=mf, theme=THEMES[theme_name])
+        if edited:
+            st.session_state.decision_tree = edited
+    with st.expander('5. Exploration assumptions', expanded=False):
+        st.slider('Geological chance of success (GCoS)', .01, .99, .30, .01, key='input_exploration_cos')
+        st.number_input('Dry-hole cost (MNOK)', 0., 20000., 900., 50., key='input_exploration_dry')
+        st.number_input('Small discovery development NPV (MNOK)', -50000., 100000., 1500., 100., key='input_exploration_small')
+        st.number_input('Large discovery development NPV (MNOK)', -50000., 200000., 12000., 250., key='input_exploration_large')
+    with st.expander('6. Load / save input project', expanded=False):
+        uploaded = st.file_uploader('Load project JSON', type=['json'], key='project_json_loader')
+        if uploaded is not None:
+            try:
+                loaded = loads_project(uploaded)
+                loaded['profile'] = validate_profile_table(loaded['profile']).to_dict('records')
+                if st.button('Apply loaded project', key='apply_loaded_project'):
+                    st.session_state._pending_project_import = loaded
+                    st.rerun()
+            except (TypeError, ValueError, KeyError) as exc:
+                st.error(f'Could not load project: {exc}')
+        inputs = draft_inputs()
+        project_bytes = dumps_project(
+            st.session_state.profile, a, st.session_state.scenario_table, st.session_state.decision_tree,
+            {'purpose':'Educational purposes only'}, st.session_state.market_deck, st.session_state.concept_table,
+            {'time_resolution':time_resolution, 'capex_phasing':capex_phasing, 'cutoff':asdict(cutoff),
+             'generator':inputs['generator'], 'use_deck':use_deck, 'uncertainty':inputs['uncertainty'],
+             'iterations':inputs['iterations'], 'seed':inputs['seed'], 'exploration':inputs['exploration']},
+            st.session_state.get('snapshots', []),
+        )
+        st.download_button('Save input project (.json)', project_bytes, 'ncs_project.json', 'application/json')
+    st.session_state.input_errors = input_errors
+    inputs = draft_inputs()
+    current_key = input_key(inputs)
+    if result is not None and (result['key'] != current_key or input_errors):
+        st.session_state.pop('analysis_results', None)
+        result = None
+    with run_controls:
+        st.caption('Updates cash flow, dashboard metrics, concepts, sensitivities, breakevens, scenarios, '
+                   'Monte Carlo, decision-tree rollback and exploration results together. '
+                   'Apply a generator preview first if you want to replace the project profile.')
+        if st.button('Run all analyses', type='primary', key='run_all', disabled=bool(input_errors)):
+            # A failed run must never leave a previous result visible.
+            st.session_state.pop('analysis_results', None)
+            try:
+                with st.spinner('Running the complete analysis suite...'):
+                    completed = run_all(inputs)
+                st.session_state.analysis_results = completed
+                st.session_state.active_page = 'Dashboard'
+                st.rerun()
+            except (ValueError, TypeError, KeyError, ArithmeticError, np.linalg.LinAlgError) as exc:
+                st.error(f'Analysis failed; results remain hidden. Review Input Data: {exc}')
+        if result is not None:
+            st.success('All results are up to date. Use the module buttons to review them.')
+        else:
+            st.info('No current results. Complete the inputs and select Run all analyses.')
 
 st.divider()
 st.markdown('<div style="text-align:center;opacity:.72;font-size:.82rem;padding:6px 0 18px"><b>Made by Merouane Hamdani</b> · Educational purposes only — non-commercial · NCS Economics Workbench</div>', unsafe_allow_html=True)
