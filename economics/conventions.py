@@ -43,3 +43,21 @@ def oil_factor(unit: str) -> float:
 def gas_factor(unit: str) -> float:
     # canonical internal unit is MSm3
     return {'Sm3': 1e6, 'kSm3': 1e3, 'MSm3': 1.0, 'BCM': 1e-3, 'MMboe': BOE_PER_SM3_GAS}.get(unit, 1.0)
+
+
+def display_frame(frame, money_unit='MNOK', oil_unit='MMbbl', gas_unit='MSm3'):
+    """Convert canonical columns and their labels together, without mutating data."""
+    out = frame.copy()
+    conversions = {
+        '_mnok': (money_factor(money_unit), money_unit),
+        '_mmbbl': (oil_factor(oil_unit), oil_unit),
+        '_msm3': (gas_factor(gas_unit), gas_unit),
+    }
+    labels = {}
+    for column in out.columns:
+        for suffix, (factor, unit) in conversions.items():
+            if column.endswith(suffix):
+                out[column] = out[column] * factor
+                labels[column] = f'{column[:-len(suffix)]} ({unit})'
+                break
+    return out.rename(columns=labels)

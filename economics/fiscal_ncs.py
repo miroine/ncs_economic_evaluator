@@ -21,11 +21,37 @@ class FiscalRegime:
 
 def _depreciation_schedule(capex: np.ndarray, years: int) -> np.ndarray:
     dep = np.zeros_like(capex, dtype=float)
-    for i, amount in enumerate(capex):
-        if amount <= 0: continue
-        annual = amount / years
-        dep[i:min(len(capex), i + years)] += annual
+    for lag in range(min(years, capex.shape[-1])):
+        dep[..., lag:] += np.maximum(capex[..., :capex.shape[-1]-lag], 0) / years
     return dep
+
+
+def tax_ledger_arrays(revenue, opex, capex, decom, ordinary_rate=.22,
+                      special_rate=.718, depreciation_years=6,
+                      loss_interest=0., special_loss_refund=True):
+    """Shared fiscal ledger for one case or a batch, with time on the last axis."""
+    dep = _depreciation_schedule(capex, depreciation_years)
+    margin = revenue - opex - decom
+    ordinary_base = np.zeros_like(margin)
+    loss_balance = np.zeros_like(margin)
+    loss = np.zeros(margin.shape[:-1])
+    for i in range(margin.shape[-1]):
+        net = margin[..., i] - dep[..., i] + loss * (1 + loss_interest)
+        ordinary_base[..., i] = np.maximum(net, 0)
+        loss = np.minimum(net, 0)
+        loss_balance[..., i] = loss
+    ordinary_tax = ordinary_base * ordinary_rate
+    special_base = margin - capex - ordinary_tax
+    special_tax = (special_base if special_loss_refund else np.maximum(special_base, 0)) * special_rate
+    return {
+        'ordinary_depreciation_mnok': dep,
+        'ordinary_tax_base_mnok': ordinary_base,
+        'ordinary_loss_cf_mnok': loss_balance,
+        'ordinary_tax_mnok': ordinary_tax,
+        'special_tax_base_mnok': special_base,
+        'special_tax_mnok': special_tax,
+        'tax_mnok': ordinary_tax + special_tax,
+    }
 
 
 def calculate_post_2022_tax(df: pd.DataFrame, regime: FiscalRegime | None = None) -> pd.DataFrame:
@@ -38,36 +64,13 @@ def calculate_post_2022_tax(df: pd.DataFrame, regime: FiscalRegime | None = None
     r = regime or FiscalRegime()
     out = df.copy()
     capex = out['capex_mnok'].to_numpy(float)
-    dep = _depreciation_schedule(capex, r.ordinary_depreciation_years)
-    operating_margin = (out['revenue_mnok'] - out['opex_mnok'] - out['decom_mnok']).to_numpy(float)
-
-    ordinary_base_pre_loss = operating_margin - dep
-    ordinary_tax = np.zeros(len(out)); loss_cf = 0.0
-    ordinary_loss_cf = np.zeros(len(out))
-    ordinary_tax_base = np.zeros(len(out))
-    for i, base in enumerate(ordinary_base_pre_loss):
-        net = base + loss_cf
-        if net >= 0:
-            ordinary_tax_base[i] = net
-            ordinary_tax[i] = net * r.ordinary_rate
-            loss_cf = 0.0
-        else:
-            ordinary_tax_base[i] = 0.0
-            loss_cf = net
-        ordinary_loss_cf[i] = loss_cf
-
-    # Special tax: qualifying investment deducted immediately; calculated ordinary
-    # company tax is deducted from the special-tax base.
-    special_base = operating_margin - capex - ordinary_tax
-    special_tax = special_base * r.special_rate  # negative => analytical refund/tax value
-
-    out['ordinary_depreciation_mnok'] = dep
-    out['ordinary_tax_base_mnok'] = ordinary_tax_base
-    out['ordinary_loss_cf_mnok'] = ordinary_loss_cf
-    out['ordinary_tax_mnok'] = ordinary_tax
-    out['special_tax_base_mnok'] = special_base
-    out['special_tax_mnok'] = special_tax
-    out['tax_mnok'] = ordinary_tax + special_tax
+    ledger = tax_ledger_arrays(
+        out['revenue_mnok'].to_numpy(float), out['opex_mnok'].to_numpy(float),
+        capex, out['decom_mnok'].to_numpy(float),
+        r.ordinary_rate, r.special_rate, r.ordinary_depreciation_years,
+    )
+    for column, values in ledger.items():
+        out[column] = values
     return out
 
 

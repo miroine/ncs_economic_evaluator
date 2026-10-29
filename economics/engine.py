@@ -24,6 +24,7 @@ except ImportError:
 __all__ = [
     'Assumptions',
     'calculate_cashflow',
+    'calculate_npv',
     'metrics',
     'breakeven_oil_price',
     'minimum_economic_volume',
@@ -98,6 +99,11 @@ def calculate_cashflow(profile: pd.DataFrame, a: Assumptions, market_deck: pd.Da
     return df
 
 
+def calculate_npv(profile, assumptions, market_deck=None, cutoff=None):
+    """NPV-only path: do not solve the IRR polynomial for sensitivity/root searches."""
+    return float(calculate_cashflow(profile, assumptions, market_deck, cutoff)['discounted_cf_mnok'].sum())
+
+
 def metrics(df: pd.DataFrame):
     cf = df['after_tax_cf_mnok'].to_numpy()
     ppy=int(df['periods_per_year'].iloc[0]) if 'periods_per_year' in df and len(df) else 1
@@ -119,7 +125,7 @@ def metrics(df: pd.DataFrame):
 def breakeven_oil_price(profile, assumptions, low=0.0, high=250.0, iterations=80, cutoff=None):
     def value(price):
         trial = Assumptions(**{**assumptions.__dict__, 'oil_price_usd_bbl': price})
-        return metrics(calculate_cashflow(profile, trial, cutoff=cutoff))['npv_mnok']
+        return calculate_npv(profile, trial, cutoff=cutoff)
 
     low_value = value(low)
     if low_value == 0:
@@ -133,6 +139,8 @@ def breakeven_oil_price(profile, assumptions, low=0.0, high=250.0, iterations=80
     if high_value < 0:
         return None
     for _ in range(iterations):
+        if high-low <= 1e-10*max(1,abs(low),abs(high)):
+            break
         mid = (low + high) / 2
         npv = value(mid)
         if npv >= 0: high = mid
@@ -151,7 +159,7 @@ def minimum_economic_volume(profile, assumptions, market_deck=None, cutoff=None,
     def value(factor):
         trial_profile = profile.copy()
         trial_profile[['oil_mmbbl', 'gas_msm3']] *= factor
-        return metrics(calculate_cashflow(trial_profile, assumptions, market_deck, cutoff))['npv_mnok']
+        return calculate_npv(trial_profile, assumptions, market_deck, cutoff)
 
     low, high = 0.0, 1.0
     low_value, high_value = value(low), value(high)
@@ -163,6 +171,8 @@ def minimum_economic_volume(profile, assumptions, market_deck=None, cutoff=None,
     if high_value < 0:
         return None
     for _ in range(80):
+        if high-low <= 1e-10*max(1,abs(low),abs(high)):
+            break
         mid = (low + high) / 2
         if value(mid) >= 0:
             high = mid

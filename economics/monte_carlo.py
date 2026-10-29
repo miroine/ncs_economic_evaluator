@@ -1,10 +1,9 @@
 from dataclasses import dataclass
-import copy
 import numpy as np
 import pandas as pd
-from .engine import Assumptions, calculate_cashflow, metrics
 from .scenarios import apply_scenario
 from .decision_tree import evaluate_tree
+from .batch import npv_cases
 
 @dataclass
 class VariableSpec:
@@ -68,25 +67,25 @@ def sample_factors(u=Uncertainty(), iterations=2000, seed=42):
     arr=np.column_stack([_factor_from_z(z[:,i],sig[i],dist[i]) for i in range(5)])
     return pd.DataFrame(arr,columns=_NAMES)
 
-def _evaluate_factor_row(profile, assumptions, row):
-    p=profile.copy(); a=copy.deepcopy(assumptions)
-    a.oil_price_usd_bbl*=row['oil']; a.gas_price_usd_sm3*=row['gas']
-    p['capex_mnok']*=row['capex']; p['opex_mnok']*=row['opex']
-    p['oil_mmbbl']*=row['production']; p['gas_msm3']*=row['production']
-    return metrics(calculate_cashflow(p,a))['npv_mnok']
-
-def run_monte_carlo(profile, assumptions, uncertainty=Uncertainty(), iterations=2000, seed=42, return_factors=False):
-    factors=sample_factors(uncertainty,iterations,seed); out=np.empty(iterations)
-    for i,row in factors.iterrows(): out[i]=_evaluate_factor_row(profile,assumptions,row)
+def run_monte_carlo(profile, assumptions, uncertainty=Uncertainty(), iterations=2000, seed=42, return_factors=False, market_deck=None, cutoff=None):
+    factors=sample_factors(uncertainty,iterations,seed)
+    cases=np.column_stack([factors.to_numpy(float),np.ones(iterations)])
+    out=npv_cases(profile,assumptions,cases,market_deck,cutoff)
     return (out,factors) if return_factors else out
 
-def run_tree_monte_carlo(profile, assumptions, scenarios, tree, uncertainty=Uncertainty(), iterations=1000, seed=42):
+def run_tree_monte_carlo(profile, assumptions, scenarios, tree, uncertainty=Uncertainty(), iterations=1000, seed=42, market_deck=None, cutoff=None):
     factors=sample_factors(uncertainty,iterations,seed); tree_values=np.empty(iterations); scenario_rows=[]
-    for i,row in factors.iterrows():
-        vals={}
-        for s in scenarios:
-            p,a=apply_scenario(profile,assumptions,s)
-            vals[s.name]=_evaluate_factor_row(p,a,row)
+    cases=np.column_stack([factors.to_numpy(float),np.ones(iterations)])
+    scenario_samples={}
+    for s in scenarios:
+        p,a=apply_scenario(profile,assumptions,s)
+        deck=None if market_deck is None else market_deck.copy()
+        if deck is not None:
+            deck['oil_usd_bbl']*=s.oil_factor
+            deck['gas_usd_sm3']*=s.gas_factor
+        scenario_samples[s.name]=npv_cases(p,a,cases,deck,cutoff)
+    for i in range(iterations):
+        vals={name:values[i] for name,values in scenario_samples.items()}
         tr=evaluate_tree(tree,vals); tree_values[i]=tr['value']
         scenario_rows.append(vals)
     return tree_values,pd.DataFrame(scenario_rows),factors

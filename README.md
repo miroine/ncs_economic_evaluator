@@ -64,9 +64,58 @@ The **Production & costs** module supports manual edits with an explicit **Apply
 
 The NCS fiscal engine remains an analytical project-level model. Company tax position, financing allocation, norm-price effects and all transitional/vintage rules must be reconciled before decision-grade use.
 
+## Performance, display units and consulting-inspired design
+
+- **McKinsey-inspired** is the default theme: white canvas, navy typography, blue
+  accents and restrained chart/card styling. This is an independent visual
+  interpretation, not an official McKinsey theme or endorsement. The existing
+  North Sea, Midnight Offshore and Arctic Light themes remain selectable.
+- Monte Carlo, tornado, sensitivity curves and spider plots use batched NumPy
+  calculations, with the same shared fiscal ledger as the full cash-flow model.
+  NPV-only analysis and breakeven searches no longer solve IRR unnecessarily.
+- Sensitivity, breakeven and market-deck views execute only when selected.
+  Canonical analysis results are cached against their model inputs; changing
+  display units does not recalculate project economics.
+- Monte Carlo now respects the active annual market deck and economic cutoff.
+  Changed model or uncertainty inputs require a new run instead of displaying
+  stale results as current. Outdated model samples are excluded from workbook
+  exports. P10/P90 use non-exceedance notation: low/high NPV, respectively.
+- Tables, monetary chart legends/axes, scenarios, concepts, snapshots and Monte
+  Carlo results convert values **and labels** together. Decision-tree live NPVs
+  and fallback inputs also follow the selected money unit; stored tree values
+  remain canonical MNOK. Changing profile-editor units resets its edit buffer,
+  so apply pending edits before switching units.
+- The displayed cash-flow CSV uses selected units in its column headings.
+  Audit CSVs, Excel workbooks, project JSON and profile import templates retain
+  canonical MNOK / MMbbl / MSm3 units for reproducibility. Price, cutoff,
+  generator and exploration input fields retain their explicitly labelled
+  canonical units; MEV remains a combined hydrocarbon volume in MMboe.
+
+### Measured performance
+
+Local comparison against the previous engine, using the default 15-year annual
+profile, NCS fiscal V2, flat prices and the same random seed:
+
+| Calculation | Previous | Updated |
+|---|---:|---:|
+| Monte Carlo, 2,000 iterations | 68.33 s | 0.018 s |
+| Spider sensitivity, 54 cases | 1.58 s | 0.016 s |
+| Six-variable breakeven table | 8.15 s | 3.04 s |
+
+These are engine timings on one machine, excluding UI rendering and cache hits,
+not universal latency guarantees. Monte Carlo and spider NPV differences were
+below 1e-8 MNOK; breakeven factors agreed within 1e-8. Fiscal/cutoff regression
+tests cover annual, quarterly and monthly profiles and all supported tax modes.
+
+Run the regression and Streamlit workflow tests with:
+
+```bash
+python -m pytest -q
+```
+
 ## Version 7 — visual design system
 
-The workbench includes three selectable interface themes: **North Sea**, **Midnight Offshore**, and **Arctic Light**. The selected theme is applied to the Streamlit workspace and Plotly figures through a centralized design layer.
+The original design layer includes **North Sea**, **Midnight Offshore**, and **Arctic Light**, alongside the newer **McKinsey-inspired** default. The selected theme is applied to the Streamlit workspace, Plotly figures and decision-tree component.
 
 ### Attribution and intended use
 

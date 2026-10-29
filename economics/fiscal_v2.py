@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-from .fiscal_ncs import _depreciation_schedule
+from .fiscal_ncs import tax_ledger_arrays
 
 @dataclass
 class FiscalV2Settings:
@@ -20,22 +20,16 @@ def _annual_ledger(annual: pd.DataFrame, s: FiscalV2Settings) -> pd.DataFrame:
     """Annual analytical NCS tax ledger. Subannual cash flows are aggregated here."""
     n=len(annual)
     capex=annual.capex_mnok.to_numpy(float)
-    dep=_depreciation_schedule(capex,max(1,s.depreciation_years))
     tariffs=annual.get('tariff_mnok',pd.Series(np.zeros(n),index=annual.index)).to_numpy(float)
     decom=annual.decom_mnok.to_numpy(float) if s.abandonment_deductible else np.zeros(n)
-    margin=annual.revenue_mnok.to_numpy(float)-annual.opex_mnok.to_numpy(float)-decom-(tariffs if s.tariff_deductible else 0)
-    ordinary_tax=np.zeros(n); ordinary_base=np.zeros(n); loss_cf=np.zeros(n); loss=0.
-    for i,b in enumerate(margin-dep):
-        loss*=1+s.ordinary_loss_interest
-        net=b+loss
-        if net>0: ordinary_base[i]=net; ordinary_tax[i]=net*s.ordinary_rate; loss=0.
-        else: loss=net
-        loss_cf[i]=loss
-    special_base=margin-capex-ordinary_tax
-    special_tax=special_base*s.special_rate if s.special_loss_refund else np.maximum(special_base,0)*s.special_rate
     result=annual[['year']].copy()
-    result['ordinary_depreciation_mnok']=dep; result['ordinary_tax_base_mnok']=ordinary_base; result['ordinary_loss_cf_mnok']=loss_cf
-    result['ordinary_tax_mnok']=ordinary_tax; result['special_tax_base_mnok']=special_base; result['special_tax_mnok']=special_tax; result['tax_mnok']=ordinary_tax+special_tax
+    ledger=tax_ledger_arrays(
+        annual.revenue_mnok.to_numpy(float),
+        annual.opex_mnok.to_numpy(float)+(tariffs if s.tariff_deductible else 0),
+        capex, decom, s.ordinary_rate, s.special_rate, max(1,s.depreciation_years),
+        s.ordinary_loss_interest, s.special_loss_refund,
+    )
+    for column,values in ledger.items(): result[column]=values
     return result
 
 
@@ -56,13 +50,11 @@ def calculate_fiscal_v2(df:pd.DataFrame, settings:FiscalV2Settings|None=None):
         annual['tariff_mnok']=tmp.groupby('_tax_year')['tariff_mnok'].sum().reindex(annual['year']).to_numpy()
     ledger=_annual_ledger(annual,s)
     cols=[c for c in ledger.columns if c!='year']
-    for c in cols: out[c]=0.0
-    # Book annual tax ledger in the last period of each year; cumulative loss is a balance.
-    for _,row in ledger.iterrows():
-        idx=out.index[out['year'].astype(int)==int(row.year)]
-        if len(idx):
-            last=idx[-1]
-            for c in cols: out.loc[last,c]=float(row[c])
+    values=np.zeros((n,len(cols)))
+    last_positions=np.flatnonzero(~tmp['_tax_year'].duplicated(keep='last').to_numpy())
+    annual_positions=pd.Index(ledger['year']).get_indexer(tmp['_tax_year'].iloc[last_positions])
+    values[last_positions]=ledger[cols].to_numpy(float)[annual_positions]
+    out[cols]=values
     out.attrs['fiscal_time_basis']='annual tax approximation; allocated to final model period of each calendar year'
     return out
 

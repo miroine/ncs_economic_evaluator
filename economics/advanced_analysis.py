@@ -4,7 +4,8 @@ import copy
 import io
 import numpy as np
 import pandas as pd
-from .engine import calculate_cashflow, metrics
+from .engine import calculate_npv
+from .batch import FACTOR_NAMES, npv_cases
 
 VARIABLES=('Oil price','Gas price','Production','CAPEX','OPEX','FX')
 
@@ -22,14 +23,19 @@ def _case(profile,a,variable,factor,market_deck=None,cutoff=None):
     elif variable=='Production': p[['oil_mmbbl','gas_msm3']]*=factor
     elif variable=='CAPEX': p['capex_mnok']*=factor
     elif variable=='OPEX': p['opex_mnok']*=factor
-    return metrics(calculate_cashflow(p,aa,deck,cutoff))['npv_mnok']
+    return calculate_npv(p,aa,deck,cutoff)
 
 
 def spider(profile,a,market_deck=None,variables=VARIABLES,changes=(-40,-30,-20,-10,0,10,20,30,40),cutoff=None):
     rows=[]
+    cases=[]
     for v in variables:
-        for pct in changes: rows.append({'variable':v,'change_pct':pct,'npv_mnok':_case(profile,a,v,1+pct/100,market_deck,cutoff)})
-    return pd.DataFrame(rows)
+        for pct in changes:
+            row=np.ones(6); row[FACTOR_NAMES.index(v)]=1+pct/100
+            cases.append(row); rows.append({'variable':v,'change_pct':pct})
+    result=pd.DataFrame(rows,columns=['variable','change_pct'])
+    result['npv_mnok']=npv_cases(profile,a,np.asarray(cases).reshape(-1,6),market_deck,cutoff)
+    return result
 
 
 def breakeven_factor(profile,a,variable,market_deck=None,low=0.05,high=5.0,iterations=70,cutoff=None):
@@ -39,6 +45,7 @@ def breakeven_factor(profile,a,variable,market_deck=None,low=0.05,high=5.0,itera
     if f0*f1>0: return None
     lo,hi=low,high
     for _ in range(iterations):
+        if hi-lo <= 1e-10*max(1,abs(lo),abs(hi)): break
         mid=(lo+hi)/2; fm=_case(profile,a,variable,mid,market_deck,cutoff)
         if (f0<=0<=fm) or (f0>=0>=fm): hi=mid
         else: lo=mid; f0=fm
@@ -86,12 +93,13 @@ def breakeven_suite(profile,a,market_deck=None,cutoff=None):
             elif v=='Production': p[['oil_mmbbl','gas_msm3']]*=f
             elif v=='CAPEX': p['capex_mnok']*=f
             elif v=='OPEX': p['opex_mnok']*=f
-            return metrics(calculate_cashflow(p,aa,deck,cutoff))['npv_mnok']
+            return calculate_npv(p,aa,deck,cutoff)
         lo,hi=.02,6.; flo,fhi=val(lo),val(hi); b=None
         if flo==0: b=lo
         elif fhi==0: b=hi
         elif flo*fhi<0:
             for _ in range(70):
+                if hi-lo <= 1e-10*max(1,abs(lo),abs(hi)): break
                 mid=(lo+hi)/2; fm=val(mid)
                 if flo*fm<=0: hi=mid; fhi=fm
                 else: lo=mid; flo=fm
@@ -107,17 +115,18 @@ def extended_breakeven_suite(profile,a,market_deck=None,cutoff=None):
     last=None
     for delay in range(0,21):
         p=profile.copy(); p['year']=p['year'].astype(int)+delay
-        v=metrics(calculate_cashflow(p,a,market_deck,cutoff))['npv_mnok']
+        v=calculate_npv(p,a,market_deck,cutoff)
         if v>=0: last=delay
         else: break
     rows.append({'variable':'Start delay','breakeven_factor':last,'breakeven_change_pct':None,'unit':'years'})
     # Discount-rate crossing in absolute annual rate.
     lo,hi=0.,.50; flo=None; root=None
     for _ in range(70):
+        if hi-lo <= 1e-10: break
         mid=(lo+hi)/2; aa=copy.deepcopy(a); aa.discount_rate=mid
-        fm=metrics(calculate_cashflow(profile,aa,market_deck,cutoff))['npv_mnok']
+        fm=calculate_npv(profile,aa,market_deck,cutoff)
         if flo is None:
-            aa0=copy.deepcopy(a); aa0.discount_rate=lo; flo=metrics(calculate_cashflow(profile,aa0,market_deck,cutoff))['npv_mnok']
+            aa0=copy.deepcopy(a); aa0.discount_rate=lo; flo=calculate_npv(profile,aa0,market_deck,cutoff)
         if flo*fm<=0: hi=mid; root=(lo+hi)/2
         else: lo=mid; flo=fm
     rows.append({'variable':'Discount rate','breakeven_factor':root,'breakeven_change_pct':None,'unit':'annual rate'})
