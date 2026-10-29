@@ -73,6 +73,44 @@ The NCS fiscal engine remains an analytical project-level model. Company tax pos
   display-unit selector. Help tooltips retain full amounts in NOK and the selected
   unit. Card text wraps rather than clipping, and the consulting-inspired theme
   uses editorial serif headings and clearer investment-case labels.
+
+### Field-level production generator
+
+The **Production & Economics → Profile Generator & Concepts** workspace supports:
+
+- Oil with associated sales gas, dry gas, gas with condensate, and independent
+  oil/gas profiles.
+- Recoverable resource volumes, or in-place volumes multiplied by explicit
+  recovery factors for each fluid.
+- Inputs in the sidebar's selected liquid/gas volume and money units. Plateau
+  rates are **annual volumes at 100% uptime**, not daily rates. Changing display
+  units converts the input values without changing canonical settings.
+- Development start and lead time, forecast production years, uptime, and separate
+  ramp/plateau/decline parameters for independent fluids.
+- Constant sales gas/oil or condensate/gas ratios for linked fluids, expressed in
+  the selected volume units. Both streams stop when either resource cap is
+  exhausted. Unlike the legacy generator, early production is not rescaled to
+  fit a resource total; the last producing year is partially depleted instead.
+- Total development CAPEX phased evenly before first production (first-year
+  booking for zero lead time), fixed annual producing OPEX, variable NOK/boe
+  OPEX, and decommissioning cost/lag. The forecast extends to include
+  decommissioning if required.
+- A bar-chart/table preview, produced and remaining volumes, and an explicit
+  **Use generated profile as project profile** action. Invalid inputs leave the
+  current project unchanged. Generator settings are included in project JSON.
+
+**Conventions and limits:** switching the resource basis reinterprets the entered
+volumes, so review volumes and recovery factors after switching. Gas represents
+sales/export gas, not reinjected or fuel gas. Condensate is booked as liquids in
+the oil column and priced with the oil deck. The generator is an annual screening
+model, not a well/reservoir simulator; it excludes well schedules, processing
+shrinkage, water handling and separate condensate pricing. Generated annual totals
+are subsequently expanded using the selected model resolution and evaluated with
+the project's active market deck, escalation, fiscal and cutoff settings.
+
+The legacy `generated_profile` API remains unchanged for existing callers.
+
+### Workspace and analysis behavior
 - The dashboard places compact cash-flow and cumulative-value charts side by
   side. Production is shown as separate oil/gas bar panels with independent,
   selected-unit axes; generated profiles use the same bar presentation.

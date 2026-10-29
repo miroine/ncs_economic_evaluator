@@ -127,3 +127,73 @@ def test_dashboard_compact_bar_profiles_and_monthly_periods():
     assert all(trace['type'] == 'bar' for trace in generated['data'])
     assert generated['layout']['yaxis']['title']['text'] == 'kbbl'
     assert generated['layout']['yaxis2']['title']['text'] == 'BCM'
+
+
+def test_generator_cases_units_recovery_and_apply():
+    app = start_app()
+    app.button(key='module_Production & Economics').click().run()
+    for case in ['Dry gas', 'Gas with condensate', 'Independent oil and gas', 'Oil with associated gas']:
+        app.selectbox(key='gen_input_field_type').select(case).run()
+        assert not app.exception
+        assert not app.error
+    app.selectbox(key='gen_input_field_type').select('Dry gas').run()
+    app.number_input(key='gen_input_gas_resources_msm3_1.0').set_value(3000.).run()
+    app.selectbox(key='sel_oil_unit').select('MSm3 oil')
+    app.selectbox(key='sel_gas_unit').select('BCM')
+    app.selectbox(key='sel_money_unit').select('BNOK').run()
+    assert not app.exception
+    assert app.number_input(key='gen_input_gas_resources_msm3_0.001').value == 3.
+    assert app.number_input(key='gen_input_gas_plateau_msm3_0.001').value == .25
+    app.selectbox(key='gen_input_resource_basis').select('In-place volumes × recovery factor').run()
+    app.number_input(key='gen_input_gas_recovery_factor_100.0').set_value(50.).run()
+    app.number_input(key='gen_input_start_year_1.0').set_value(2030.).run()
+    generator_before = dict(app.session_state.generator)
+    app.button(key='module_Dashboard').click().run()
+    app.button(key='module_Production & Economics').click().run()
+    assert app.session_state.generator == generator_before
+    app.button(key='apply_generated_profile').click().run()
+    assert not app.exception
+    p = app.session_state.profile
+    assert p.year.min() == 2030
+    assert p.oil_mmbbl.sum() == 0
+    assert 0 < p.gas_msm3.sum() <= 1500.
+    assert p.loc[p.year < 2032, 'gas_msm3'].sum() == 0
+    assert p.capex_mnok.sum() == generator_before['capex_mnok']
+    assert p.decom_mnok.sum() == generator_before['decom_mnok']
+    app.button(key='module_Project & Export').click().run()
+    assert not app.exception
+    # Saved generator settings travel with the canonical project profile.
+    from economics.project_io import dumps_project, loads_project
+    from economics.engine import Assumptions
+    payload = dumps_project(p, Assumptions(), [], {}, settings={'generator':generator_before})
+    loaded = loads_project(payload)
+    assert loaded['settings']['generator'] == generator_before
+    app.session_state._pending_project_import = loaded
+    app.button(key='module_Production & Economics').click().run()
+    assert not app.exception
+    assert app.session_state.generator == generator_before
+    assert app.selectbox(key='gen_input_field_type').value == 'Dry gas'
+
+
+def test_generator_invalid_inputs_do_not_replace_project_profile():
+    app = start_app()
+    app.button(key='module_Production & Economics').click().run()
+    original = app.session_state.profile.copy()
+    app.number_input(key='gen_input_oil_plateau_mmbbl_1.0').set_value(0.).run()
+    assert not app.exception
+    assert any('positive recoverable resources and plateau' in error.value for error in app.error)
+    assert not any(button.key == 'apply_generated_profile' for button in app.button)
+    assert app.session_state.profile.equals(original)
+
+
+def test_condensate_ratio_keeps_precision_in_small_display_units():
+    app = start_app()
+    app.button(key='module_Production & Economics').click().run()
+    app.selectbox(key='gen_input_field_type').select('Gas with condensate')
+    app.selectbox(key='sel_gas_unit').select('Sm3').run()
+    assert not app.exception
+    ratio = next(widget for widget in app.number_input if widget.label.startswith('Condensate / sales gas ratio'))
+    assert ratio.value == .002 / 1e6
+    assert ratio.proto.format == '%.10g'
+    assert ratio.proto.step <= ratio.value
+    assert not app.error

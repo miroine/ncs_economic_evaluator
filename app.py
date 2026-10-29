@@ -1,6 +1,7 @@
 import json
 import io
 import hashlib
+from dataclasses import asdict
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -26,7 +27,7 @@ from economics.monte_carlo import (
     Uncertainty, run_monte_carlo, run_tree_monte_carlo, summary as mc_summary, correlation_matrix
 )
 from economics.cutoff import CutoffSettings
-from economics.production import generated_profile
+from economics.production import FIELD_TYPES, FieldProfileSettings, field_profile
 from economics.concepts import DevelopmentConcept, compare_concepts
 from economics.value_of_information import evpi_from_payoffs, evsi_from_signals
 from economics.periods import expand_profile
@@ -185,6 +186,15 @@ if '_pending_project_import' in st.session_state:
     if 'cost_escalation' in la: st.session_state.assump_cost_esc_pct = float(la['cost_escalation'])*100
     if 'time_resolution' in ls: st.session_state.setting_resolution = ls['time_resolution']
     if 'capex_phasing' in ls: st.session_state.setting_capex_phasing = ls['capex_phasing']
+    if ls.get('generator') is not None:
+        st.session_state.generator = ls['generator']
+    else:
+        st.session_state.pop('generator', None)
+    for key in list(st.session_state):
+        if key.startswith('gen_input_'):
+            del st.session_state[key]
+
+years = sorted(st.session_state.profile.year.astype(int).unique().tolist())
 
 PAGES = [
     'Dashboard',
@@ -342,6 +352,31 @@ def money_card(container, label, value, description):
                           f'({value * 1e6:,.2f} NOK).')
 
 
+def store_generator_input(name, key, factor):
+    st.session_state.generator[name] = st.session_state[key] / factor
+
+
+def generator_number(container, name, label, factor=1., step=1., minimum=0., maximum=None):
+    """Keep canonical inputs separate from disposable, unit-specific widgets."""
+    key = f'gen_input_{name}_{factor}'
+    value = st.session_state.generator[name] * factor
+    return container.number_input(
+        label, min_value=float(minimum), max_value=None if maximum is None else float(maximum),
+        value=float(value), step=float(step), format='%.10g', key=key,
+        on_change=store_generator_input, args=(name, key, factor),
+    ) / factor
+
+
+def store_generator_choice(name, key):
+    st.session_state.generator[name] = st.session_state[key]
+
+
+def generator_choice(label, name, options):
+    key = f'gen_input_{name}'
+    return st.selectbox(label, options, index=options.index(st.session_state.generator[name]),
+                        key=key, on_change=store_generator_choice, args=(name, key))
+
+
 # ==============================================================================
 # 1. DASHBOARD
 # ==============================================================================
@@ -479,23 +514,111 @@ elif page == 'Production & Economics':
 
     with tab_gen:
         st.subheader('Production profile generator & reserves')
-        g1, g2, g3, g4 = st.columns(4)
-        gres = g1.number_input('Recoverable oil (MMbbl)', 1.0, 2000.0, 100.0, 5.0)
-        gplat = g2.number_input('Oil plateau (MMbbl/year)', .1, 200.0, 12.0, .5)
-        gdecl = g3.number_input('Annual decline (%)', 0.0, 80.0, 15.0, 1.0) / 100
-        glife = g4.number_input('Profile periods', 5, 60, 20, 1)
-        generated = generated_profile(
-            int(st.session_state.profile.year.min()), int(glife), float(gres), float(gplat),
-            250.0, 2, 4, float(gdecl), float(st.session_state.profile.capex_mnok.sum()),
-            float(st.session_state.profile.opex_mnok[st.session_state.profile.opex_mnok > 0].median() or 0),
-            float(st.session_state.profile.decom_mnok.sum())
-        )
-        render_chart(production_chart(generated, oil_unit, gas_unit, 'Generated production profile'), use_container_width=True)
-        st.caption('Generator inputs above use the explicitly stated canonical units.')
-        if st.button('Use generated profile as project profile'):
-            st.session_state.profile = generated
-            st.success('Project profile updated with generated curve.')
-            st.rerun()
+        if 'generator' not in st.session_state:
+            positive_opex = st.session_state.profile.loc[st.session_state.profile.opex_mnok > 0, 'opex_mnok']
+            defaults = FieldProfileSettings(
+                start_year=int(st.session_state.profile.year.min()),
+                capex_mnok=float(st.session_state.profile.capex_mnok.sum()),
+                annual_opex_mnok=float(positive_opex.median()) if len(positive_opex) else 0.,
+                decom_mnok=float(st.session_state.profile.decom_mnok.sum()),
+            )
+            st.session_state.generator = {**asdict(defaults), 'resource_basis':'Recoverable volumes'}
+        field_type = generator_choice('Field / fluid case', 'field_type', list(FIELD_TYPES))
+        resource_basis = generator_choice('Resource basis', 'resource_basis', [
+            'Recoverable volumes', 'In-place volumes × recovery factor',
+        ])
+        st.caption(f'Volumes follow sidebar units: liquids in {oil_unit}, gas in {gas_unit}, costs in {money_unit}. '
+                   'Plateau inputs are annual volumes at 100% uptime; uptime is applied once. '
+                   'Use sales/export gas volumes, excluding reinjection and fuel.')
+        st.caption('Changing resource basis reinterprets the resource numbers; review volumes and recovery factors after switching.')
+        t1, t2, t3, t4 = st.columns(4)
+        generator_number(t1, 'start_year', 'Development start year', minimum=1900, maximum=2200)
+        generator_number(t2, 'development_years', 'Development lead time (years)', maximum=30)
+        generator_number(t3, 'production_years', 'Production forecast (years)', minimum=1, maximum=100)
+        generator_number(t4, 'uptime', 'Production uptime (%)', factor=100., step=1., minimum=1., maximum=100.)
+        in_place = resource_basis == 'In-place volumes × recovery factor'
+        resource_label = 'In-place' if in_place else 'Recoverable'
+        liquids = field_type != 'Dry gas'
+        primary_oil = field_type in ('Oil with associated gas', 'Independent oil and gas')
+        primary_gas = field_type != 'Oil with associated gas'
+        for fluid, enabled, primary, unit, factor in [
+            ('oil', liquids, primary_oil, oil_unit, of),
+            ('gas', True, primary_gas, gas_unit, gf),
+        ]:
+            if not enabled:
+                continue
+            fluid_label = 'Condensate' if fluid == 'oil' and field_type == 'Gas with condensate' else fluid.title()
+            st.markdown(f'#### {fluid_label} resources' + (' & deliverability' if primary else ' / linked-fluid cap'))
+            r1, r2 = st.columns(2)
+            generator_number(r1, f'{fluid}_resources_' + ('mmbbl' if fluid == 'oil' else 'msm3'),
+                             f'{resource_label} {fluid_label.lower()} ({unit})', factor, step=max(factor, .000001))
+            if in_place:
+                generator_number(r2, f'{fluid}_recovery_factor', f'{fluid_label} recovery factor (%)',
+                                 factor=100., step=1., maximum=100.)
+            if primary:
+                p1, p2, p3, p4 = st.columns(4)
+                generator_number(p1, f'{fluid}_plateau_' + ('mmbbl' if fluid == 'oil' else 'msm3'),
+                                 f'{fluid_label} plateau ({unit}/year)', factor, step=max(factor, .000001))
+                generator_number(p2, f'{fluid}_ramp_years', f'{fluid_label} ramp-up (years)', maximum=100.)
+                generator_number(p3, f'{fluid}_plateau_years', f'{fluid_label} plateau duration (years)', maximum=100.)
+                generator_number(p4, f'{fluid}_decline_rate', f'{fluid_label} annual decline (%)',
+                                 factor=100., step=1., maximum=100.)
+        if field_type == 'Oil with associated gas':
+            generator_number(st, 'associated_gas_msm3_per_mmbbl',
+                             f'Sales gas / oil ratio ({gas_unit} / {oil_unit})', gf / of,
+                             step=max(gf / of, 1e-12))
+        elif field_type == 'Gas with condensate':
+            generator_number(st, 'condensate_mmbbl_per_msm3',
+                             f'Condensate / sales gas ratio ({oil_unit} / {gas_unit})', of / gf,
+                             step=max(.001 * of / gf, 1e-12))
+            st.info('Condensate is stored in the oil/liquids column and valued using the oil price deck; '
+                    'a separate condensate price, shrinkage and processing model is not included.')
+        if field_type in ('Oil with associated gas', 'Gas with condensate'):
+            st.caption('The linked-fluid ratio stays constant. Production stops when either recoverable resource cap is reached.')
+        st.markdown('#### Development & operating costs')
+        k1, k2, k3, k4 = st.columns(4)
+        generator_number(k1, 'capex_mnok', f'Total development CAPEX ({money_unit})', mf, step=100. * mf)
+        generator_number(k2, 'annual_opex_mnok', f'Fixed producing OPEX ({money_unit}/year)', mf, step=10. * mf)
+        generator_number(k3, 'variable_opex_nok_boe', 'Variable OPEX (NOK/boe)', step=1.)
+        generator_number(k4, 'decom_mnok', f'Decommissioning cost ({money_unit})', mf, step=100. * mf)
+        generator_number(st, 'decom_lag_years', 'Decommissioning lag after last production (years)', maximum=30.)
+        st.caption('CAPEX is phased evenly over development years (or booked in the first year for immediate start-up). '
+                   'Fixed OPEX applies only in producing years. Decommissioning is booked after last production plus the lag; '
+                   'the output horizon extends if needed. Costs are entered before engine escalation and tax.')
+        fields = asdict(FieldProfileSettings())
+        settings = {key: st.session_state.generator[key] for key in fields}
+        for key in ('start_year', 'development_years', 'production_years', 'oil_ramp_years',
+                    'gas_ramp_years', 'oil_plateau_years', 'gas_plateau_years', 'decom_lag_years'):
+            settings[key] = int(settings[key])
+        if not in_place:
+            settings['oil_recovery_factor'] = settings['gas_recovery_factor'] = 1.
+        generated = None
+        try:
+            generated = field_profile(FieldProfileSettings(**settings))
+        except ValueError as exc:
+            st.error(f'Cannot generate profile: {exc}')
+        if generated is not None:
+            render_chart(production_chart(generated, oil_unit, gas_unit, 'Generated production profile'), use_container_width=True)
+            s1, s2, s3 = st.columns(3)
+            s1.metric(f'Forecast liquids ({oil_unit})', f'{generated.oil_mmbbl.sum() * of:,.3f}')
+            s2.metric(f'Forecast sales gas ({gas_unit})', f'{generated.gas_msm3.sum() * gf:,.3f}')
+            s3.metric('First production', generated.attrs['first_production_year'])
+            for fluid, column, factor, unit in [('oil', 'oil_mmbbl', of, oil_unit), ('gas', 'gas_msm3', gf, gas_unit)]:
+                if fluid == 'oil' and not liquids:
+                    continue
+                cap = settings[f'{fluid}_resources_' + ('mmbbl' if fluid == 'oil' else 'msm3')] * settings[f'{fluid}_recovery_factor']
+                remaining = max(0., cap - float(generated[column].sum()))
+                st.caption(f'{fluid.title()} remaining outside forecast: {remaining * factor:,.3f} {unit}.')
+            st.caption(f"Last production: {generated.attrs['last_production_year']} | "
+                       f"Decommissioning: {generated.attrs['decommissioning_year']}. "
+                       'Annual screening model; not a reservoir simulation or reserves certification.')
+            with st.expander('Preview annual production & cost table'):
+                st.dataframe(display_table(generated), use_container_width=True, hide_index=True)
+                st.download_button('Download generated canonical profile CSV', generated.to_csv(index=False),
+                                   'generated_profile.csv', 'text/csv')
+            if st.button('Use generated profile as project profile', key='apply_generated_profile'):
+                st.session_state.profile = validate_profile_table(generated)
+                st.rerun()
 
         st.divider()
         st.subheader('Development concept comparison')
@@ -806,7 +929,8 @@ elif page == 'Project & Export':
                 st.session_state.get('decision_tree', {}),
                 {'author':'Merouane Hamdani','purpose':'Educational purposes only — non-commercial','app_version':'V12.3'},
                 st.session_state.market_deck, st.session_state.get('concept_table'),
-                {'time_resolution':time_resolution, 'capex_phasing':capex_phasing, 'cutoff':cutoff.__dict__},
+                {'time_resolution':time_resolution, 'capex_phasing':capex_phasing, 'cutoff':cutoff.__dict__,
+                 'generator':st.session_state.get('generator')},
                 st.session_state.snapshots
             )
             st.download_button('Save complete project (.json)', project_bytes, 'ncs_project.json', 'application/json')
