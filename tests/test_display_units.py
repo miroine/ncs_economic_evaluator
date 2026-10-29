@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from economics.conventions import BBL_PER_SM3, display_frame, gas_factor, money_factor, oil_factor
+from economics.conventions import BBL_PER_SM3, compact_money, display_frame, gas_factor, money_factor, oil_factor
 from economics.project_io import validate_profile_table
 
 
@@ -46,3 +46,23 @@ def test_physical_conversion_reference_values():
     assert 1000 * gas_factor('BCM') == 1
     assert 169.9 * gas_factor('MMboe') == pytest.approx(1)
     assert 1 * money_factor('NOK') == 1_000_000
+
+
+@pytest.mark.parametrize('value,expected', [
+    (4925.91, '4.93 billion NOK'),
+    (23.5, '23.50 million NOK'),
+    (-4925.91, '-4.93 billion NOK'),
+    (.25, '250.00 thousand NOK'),
+    (.000025, '25.00 NOK'),
+    (0, '0.00 NOK'),
+    (999.999, '1.00 billion NOK'),
+    (1_500_000, '1.50 trillion NOK'),
+])
+def test_compact_card_amounts_are_explicit_and_readable(value, expected):
+    assert compact_money(value) == expected
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
+def test_compact_card_rejects_nonfinite_amounts(value):
+    with pytest.raises(ValueError, match='finite'):
+        compact_money(value)

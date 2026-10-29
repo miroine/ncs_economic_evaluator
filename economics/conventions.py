@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 
 BBL_PER_SM3 = 6.28981077
 BOE_PER_SM3_GAS = 1.0 / 169.9  # approximate energy-equivalent conversion
@@ -33,6 +34,17 @@ def consistent_discount_rate(rate: float, rate_basis: str, money_basis: str, inf
 def money_factor(unit: str) -> float:
     # canonical internal unit is MNOK. Returned factor converts MNOK -> display unit.
     return {'NOK': 1e6, 'kNOK': 1e3, 'MNOK': 1.0, 'BNOK': 1e-3}.get(unit, 1.0)
+
+
+def compact_money(value_mnok: float) -> str:
+    """Readable card amount; canonical MNOK in, explicitly scaled NOK out."""
+    if not math.isfinite(value_mnok):
+        raise ValueError('Card amounts must be finite')
+    # Select the scale after rounding so 999.999 million displays as 1 billion.
+    for divisor, scale in [(1e6, 'trillion'), (1e3, 'billion'), (1, 'million'), (.001, 'thousand')]:
+        if round(abs(value_mnok) / divisor, 2) >= 1:
+            return f'{value_mnok / divisor:,.2f} {scale} NOK'
+    return f'{value_mnok * 1e6:,.2f} NOK'
 
 
 def oil_factor(unit: str) -> float:

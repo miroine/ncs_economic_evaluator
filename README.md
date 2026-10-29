@@ -66,6 +66,17 @@ The NCS fiscal engine remains an analytical project-level model. Company tax pos
 
 ## Performance, display units and consulting-inspired design
 
+- Modules are always visible as navigation buttons above the workspace, with the
+  active module highlighted. The sidebar is reserved for assumptions and settings.
+- Monetary KPI cards automatically abbreviate amounts with explicit scales such
+  as **4.93 billion NOK** or **250.00 million NOK**, independently of the table/chart
+  display-unit selector. Help tooltips retain full amounts in NOK and the selected
+  unit. Card text wraps rather than clipping, and the consulting-inspired theme
+  uses editorial serif headings and clearer investment-case labels.
+- The dashboard places compact cash-flow and cumulative-value charts side by
+  side. Production is shown as separate oil/gas bar panels with independent,
+  selected-unit axes; generated profiles use the same bar presentation.
+  Quarterly/monthly dashboard plots retain individual model-period labels.
 - **McKinsey-inspired** is the default theme: white canvas, navy typography, blue
   accents and restrained chart/card styling. This is an independent visual
   interpretation, not an official McKinsey theme or endorsement. The existing

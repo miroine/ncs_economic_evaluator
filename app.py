@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
+from plotly.subplots import make_subplots
 import streamlit as st
 
 from economics.engine import Assumptions, calculate_cashflow, metrics, breakeven_oil_price, minimum_economic_volume
@@ -16,7 +17,7 @@ from economics.advanced_analysis import (
     excel_workbook, breakeven_suite, extended_breakeven_suite
 )
 from economics.conventions import (
-    BBL_PER_SM3, money_factor, oil_factor, gas_factor, consistent_discount_rate, display_frame
+    BBL_PER_SM3, money_factor, oil_factor, gas_factor, consistent_discount_rate, display_frame, compact_money
 )
 from economics.decision_tree import evaluate_tree
 from economics.scenarios import Scenario, evaluate_scenarios
@@ -71,6 +72,12 @@ def apply_theme(name):
     h1 {{font-family:Georgia, 'Times New Roman', serif; font-weight:400;}}
     div[data-testid="stMetric"] {{background:{t['card']}; border:1px solid {t['grid']}; border-top:3px solid {t['accent']}; padding:16px 18px; border-radius:2px;}}
     div[data-testid="stMetricLabel"] {{color:{t['muted']};}}
+    [data-testid="stMetricLabel"] p {{white-space:normal; overflow:visible; text-overflow:clip;}}
+    [data-testid="stMetricValue"], [data-testid="stMetricValue"] > div, [data-testid="stMetricValue"] p {{
+        font-size:1.6rem; line-height:1.25; font-weight:500;
+        white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere;
+        font-variant-numeric:tabular-nums;
+    }}
     .stTabs [data-baseweb="tab-list"] {{gap:6px; border-bottom:1px solid {t['grid']};}}
     .stTabs [data-baseweb="tab"] {{border-radius:9px 9px 0 0; padding:8px 14px;}}
     .stTabs [aria-selected="true"] {{background:{t['card']}; color:{t['accent']};}}
@@ -79,14 +86,25 @@ def apply_theme(name):
     .ncs-sub {{color:{t['muted']}; margin-top:4px;}}
     [data-testid="stHorizontalBlock"] {{flex-wrap:wrap;}}
     [data-testid="column"] {{min-width:260px;}}
+    .st-key-module_navigation [data-testid="column"], .st-key-module_navigation [data-testid="stColumn"] {{min-width:130px;}}
     .stDataFrame, [data-testid="stDataEditor"] {{overflow-x:auto;}}
     [data-testid="stWidgetLabel"], [data-testid="stCaptionContainer"], [data-testid="stMarkdownContainer"] {{color:{t['text']};}}
     [data-baseweb="select"] > div, [data-baseweb="input"], [data-baseweb="input"] input {{background:{t['card']}; color:{t['text']};}}
     button[kind="primary"] {{background:{t['accent']}; color:#ffffff; border-radius:2px;}}
     button[kind="primary"] [data-testid="stMarkdownContainer"] {{color:#ffffff;}}
-    @media (max-width: 900px) {{ .ncs-hero {{padding:14px 16px;}} [data-testid="column"] {{min-width:100% !important;}} }}
+    @media (max-width: 900px) {{ .ncs-hero {{padding:14px 16px;}} [data-testid="column"], [data-testid="stColumn"] {{min-width:100% !important;}} }}
     .ncs-notice {{margin-top:22px; padding:12px 14px; border:1px solid {t['grid']}; border-radius:12px; color:{t['muted']}; font-size:.82rem; background:{t['card']};}}
     </style>""", unsafe_allow_html=True)
+    if name == 'McKinsey-inspired':
+        st.markdown("""<style>
+        [data-testid="stHeading"] h1, [data-testid="stHeading"] h2,
+        [data-testid="stHeading"] h3, .ncs-hero h1 {
+            font-family:Georgia, 'Times New Roman', serif !important;
+            font-weight:400 !important; letter-spacing:-.025em;
+        }
+        [data-testid="stMetricLabel"] p {font-size:.8rem; font-weight:600; letter-spacing:.02em;}
+        .ncs-sub {font-size:.95rem; line-height:1.5;}
+        </style>""", unsafe_allow_html=True)
 
 # Cache canonical results, not unit-specific presentation. All model inputs remain
 # part of Streamlit's cache key, so edits invalidate the affected analyses.
@@ -107,11 +125,31 @@ def render_chart(figure, **kwargs):
     st.plotly_chart(figure, theme=None, **kwargs)
 
 
+def production_chart(profile, oil_unit, gas_unit, title):
+    x = profile['period'] if 'period' in profile else profile['year'].astype(str)
+    figure = make_subplots(rows=1, cols=2, subplot_titles=[
+        f'Oil ({oil_unit})', f'Gas ({gas_unit})',
+    ], horizontal_spacing=.12)
+    for column, values, label, color in [
+        (1, profile['oil_mmbbl'] * oil_factor(oil_unit), f'Oil ({oil_unit})', THEMES[theme_name]['accent']),
+        (2, profile['gas_msm3'] * gas_factor(gas_unit), f'Gas ({gas_unit})', THEMES[theme_name]['accent2']),
+    ]:
+        figure.add_trace(go.Bar(x=x, y=values, name=label, marker_color=color,
+                               hovertemplate=f'%{{x}}<br>%{{y:,.2f}} {label}<extra></extra>'),
+                         row=1, col=column)
+        figure.update_yaxes(title_text=oil_unit if column == 1 else gas_unit,
+                            rangemode='tozero', row=1, col=column)
+    figure.update_xaxes(type='category', nticks=8, title_text='Period' if 'period' in profile else 'Year')
+    figure.update_layout(title=title, height=280, showlegend=False,
+                         margin=dict(l=45, r=20, t=80, b=40), bargap=.2)
+    return figure
+
+
 with st.sidebar:
     theme_name = st.selectbox("Interface theme", list(THEMES), index=0, key="theme_name")
 apply_theme(theme_name)
 
-st.markdown("""<div class="ncs-hero"><div class="ncs-kicker">NCS project economics</div><h1 style="margin:.15rem 0 .2rem 0">NCS Economics Workbench</h1><div class="ncs-sub">Project economics · fiscal modelling · uncertainty · decision analysis</div></div>""", unsafe_allow_html=True)
+st.markdown("""<div class="ncs-hero"><div class="ncs-kicker">Energy &amp; capital projects | Norwegian continental shelf</div><h1 style="margin:.15rem 0 .2rem 0">NCS Economics Workbench</h1><div class="ncs-sub">Assess project value. Understand downside exposure. Compare investment choices.</div></div>""", unsafe_allow_html=True)
 
 years = list(range(2027, 2042))
 def default_profile():
@@ -156,9 +194,20 @@ PAGES = [
     'Project & Export'
 ]
 
-with st.sidebar:
-    st.subheader('Workspace')
-    page = st.selectbox('Module', PAGES, key='active_page')
+if 'active_page' not in st.session_state:
+    st.session_state.active_page = PAGES[0]
+
+
+def select_module(module):
+    st.session_state.active_page = module
+
+
+with st.container(key='module_navigation'):
+    for column, module in zip(st.columns(len(PAGES)), PAGES):
+        column.button(module, key=f'module_{module}', use_container_width=True,
+                      type='primary' if st.session_state.active_page == module else 'secondary',
+                      on_click=select_module, args=(module,))
+page = st.session_state.active_page
 
 with st.sidebar:
     st.header('Case assumptions')
@@ -287,19 +336,28 @@ def display_table(frame):
     return display_frame(frame, money_unit, oil_unit, gas_unit)
 
 
+def money_card(container, label, value, description):
+    container.metric(label, compact_money(value),
+                     help=f'{description}\n\nFull amount: {value * mf:,.2f} {money_unit} '
+                          f'({value * 1e6:,.2f} NOK).')
+
+
 # ==============================================================================
 # 1. DASHBOARD
 # ==============================================================================
 if page == 'Dashboard':
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric('Pre-tax NPV', f"{m['pre_tax_npv_mnok']*mf:,.2f} {money_unit}")
-    c2.metric('After-tax NPV', f"{m['after_tax_npv_mnok']*mf:,.2f} {money_unit}")
-    c3.metric('IRR after tax', '—' if m['irr'] is None else f"{m['irr']:.1%}")
+    st.subheader('Investment case at a glance')
+    c1, c2, c3 = st.columns(3)
+    c4, c5, c6 = st.columns(3)
+    money_card(c1, 'Pre-tax project value', m['pre_tax_npv_mnok'], 'Net present value before tax.')
+    money_card(c2, 'After-tax project value', m['after_tax_npv_mnok'], 'Net present value after tax.')
+    c3.metric('After-tax return (IRR)', '—' if m['irr'] is None else f"{m['irr']:.1%}",
+              help='Annualized internal rate of return on after-tax cash flows.')
     
     # Breakeven metric display with both $/bbl ($/Sm3) and deck factor
     if use_deck:
         if deck_be is not None and equiv_oil_be_usd_bbl is not None:
-            be_str = f"${equiv_oil_be_usd_bbl:.1f}/bbl ({deck_be:.3f}× deck)"
+            be_str = f"${equiv_oil_be_usd_bbl:.1f}/bbl"
             c4.metric('Oil breakeven', be_str, help=f"Weighted deck oil breakeven: ${equiv_oil_be_usd_bbl:,.2f}/bbl (${equiv_oil_be_usd_sm3:,.2f}/Sm³), requiring a {deck_be:.3f}× factor on the market deck.")
         else:
             c4.metric('Oil breakeven', '—', help='No breakeven found in search range')
@@ -309,23 +367,44 @@ if page == 'Dashboard':
         else:
             c4.metric('Oil breakeven', '—')
             
-    c5.metric('MEV', '—' if mev is None else f"{mev:,.2f} MMboe", help="Minimum economic hydrocarbon volume required for NPV = 0")
-    c6.metric('Payback', m['payback_year'] or '—')
+    c5.metric('Minimum viable volume', '—' if mev is None else f"{mev:,.2f} million boe", help="Minimum economic hydrocarbon volume required for NPV = 0. boe = barrels of oil equivalent.")
+    c6.metric('Payback period', m['payback_year'] or '—', help='First model period with non-negative cumulative after-tax cash flow.')
+    st.caption('Value cards automatically use thousands, millions or billions of NOK. Hover over the help icons for full amounts; tables and plots retain the selected display units.')
     
     if cf.attrs.get('cutoff_year') is not None:
         st.info(f"Economic cessation: {cf.attrs.get('cutoff_year')} — {cf.attrs.get('cutoff_reason')}")
     st.caption(f"{money_basis.title()} money • entered {rate_basis} discount {disc:.2%} • effective {money_basis} discount {consistent_discount_rate(disc,rate_basis,money_basis,inflation):.2%}")
     
-    chart_cf = display_table(cf[['year','pre_tax_cf_mnok','after_tax_cf_mnok']])
-    render_chart(px.bar(chart_cf, x='year', y=list(chart_cf.columns[1:]), barmode='group', title=f'Period cash flow ({money_unit})', labels={'value':money_unit, 'variable':'Cash flow'}), use_container_width=True)
-    
-    cum = display_table(cf[['year','cumulative_cf_mnok','cumulative_npv_mnok']])
-    render_chart(px.line(cum, x='year', y=list(cum.columns[1:]), markers=True, title=f'Cumulative cash flow and NPV ({money_unit})', labels={'value':money_unit, 'variable':'Cash flow'}), use_container_width=True)
-    
-    prod = cf[['year','oil_mmbbl','gas_msm3']].copy()
-    prod[f'Oil ({oil_unit})'] = prod['oil_mmbbl'] * of
-    prod[f'Gas ({gas_unit})'] = prod['gas_msm3'] * gf
-    render_chart(px.line(prod, x='year', y=[f'Oil ({oil_unit})', f'Gas ({gas_unit})'], markers=True, title=f'Production profile — Oil ({oil_unit}), Gas ({gas_unit})', labels={'value':'Volume (units shown in legend)'}), use_container_width=True)
+    cashflow_column, cumulative_column = st.columns(2)
+    with cashflow_column:
+        chart_cf = display_table(cf[['period','pre_tax_cf_mnok','after_tax_cf_mnok']])
+        chart_cf = chart_cf.rename(columns={
+            f'pre_tax_cf ({money_unit})': f'Pre-tax ({money_unit})',
+            f'after_tax_cf ({money_unit})': f'After-tax ({money_unit})',
+        })
+        figure = px.bar(chart_cf, x='period', y=list(chart_cf.columns[1:]), barmode='group',
+                        title='Period cash flow', labels={'value':money_unit, 'variable':'', 'period':'Period'})
+        figure.add_hline(y=0, line_width=1)
+        figure.update_xaxes(type='category', nticks=8)
+        figure.update_layout(height=300, margin=dict(l=45, r=15, t=45, b=35),
+                             legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
+                             title=dict(y=.98), hovermode='x unified')
+        render_chart(figure, use_container_width=True)
+    with cumulative_column:
+        cum = display_table(cf[['period','cumulative_cf_mnok','cumulative_npv_mnok']])
+        cum = cum.rename(columns={
+            f'cumulative_cf ({money_unit})': f'Cash flow ({money_unit})',
+            f'cumulative_npv ({money_unit})': f'Discounted NPV ({money_unit})',
+        })
+        figure = px.line(cum, x='period', y=list(cum.columns[1:]), title='Cumulative value',
+                         labels={'value':money_unit, 'variable':'', 'period':'Period'})
+        figure.add_hline(y=0, line_width=1)
+        figure.update_xaxes(type='category', nticks=8)
+        figure.update_layout(height=300, margin=dict(l=45, r=15, t=45, b=35),
+                             legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
+                             title=dict(y=.98), hovermode='x unified')
+        render_chart(figure, use_container_width=True)
+    render_chart(production_chart(cf, oil_unit, gas_unit, 'Production profile'), use_container_width=True)
 
 
 # ==============================================================================
@@ -411,8 +490,7 @@ elif page == 'Production & Economics':
             float(st.session_state.profile.opex_mnok[st.session_state.profile.opex_mnok > 0].median() or 0),
             float(st.session_state.profile.decom_mnok.sum())
         )
-        generated_display = display_table(generated[['year', 'oil_mmbbl', 'gas_msm3']])
-        render_chart(px.line(generated_display, x='year', y=list(generated_display.columns[1:]), title='Generated ramp / plateau / decline profile', labels={'value':'Volume (units shown in legend)'}), use_container_width=True)
+        render_chart(production_chart(generated, oil_unit, gas_unit, 'Generated production profile'), use_container_width=True)
         st.caption('Generator inputs above use the explicitly stated canonical units.')
         if st.button('Use generated profile as project profile'):
             st.session_state.profile = generated
@@ -640,10 +718,10 @@ elif page == 'Scenarios & Uncertainty':
             factors = st.session_state.get('mc_factors')
             ms = mc_summary(samples)
             x1, x2, x3, x4, x5 = st.columns(5)
-            x1.metric('P10 (10th percentile / downside)', f"{ms['P10']*mf:,.2f} {money_unit}")
-            x2.metric('P50 (Median)', f"{ms['P50']*mf:,.2f} {money_unit}")
-            x3.metric('P90 (90th percentile / upside)', f"{ms['P90']*mf:,.2f} {money_unit}")
-            x4.metric('Mean', f"{ms['mean']*mf:,.2f} {money_unit}")
+            money_card(x1, 'P10 (10th percentile / downside)', ms['P10'], '10th-percentile after-tax NPV.')
+            money_card(x2, 'P50 (Median)', ms['P50'], 'Median after-tax NPV.')
+            money_card(x3, 'P90 (90th percentile / upside)', ms['P90'], '90th-percentile after-tax NPV.')
+            money_card(x4, 'Mean', ms['mean'], 'Mean after-tax NPV.')
             x5.metric('P(NPV > 0)', f"{ms['prob_npv_positive']:.1%}")
             
             c_hist, c_scurve = st.columns(2)
@@ -688,7 +766,7 @@ elif page == 'Scenarios & Uncertainty':
         try:
             tr = evaluate_tree(st.session_state.decision_tree, scenario_values)
             c1, c2 = st.columns(2)
-            c1.metric('Current decision-tree value', f"{tr['value']*mf:,.2f} {money_unit}")
+            money_card(c1, 'Current decision-tree value', tr['value'], 'Rolled-back value of the current decision tree.')
             c2.write('Selected decision edges: ' + (', '.join(tr['selected_edges']) or '—'))
             for w in tr['warnings']: st.warning(w)
         except Exception as exc:
@@ -789,7 +867,7 @@ elif page == 'Project & Export':
             small = st.number_input('Small discovery development NPV (MNOK)', -50000.0, 100000.0, 1500.0, 100.0)
             large = st.number_input('Large discovery development NPV (MNOK)', -50000.0, 200000.0, 12000.0, 250.0)
             pe = prospect_emv(cos, dry, [DiscoveryCase('Small', .55, small), DiscoveryCase('Large', .45, large)])
-            st.metric('Risked exploration EMV', f"{pe['risked_emv_mnok']*mf:,.2f} {money_unit}")
+            money_card(st, 'Risked exploration EMV', pe['risked_emv_mnok'], 'Expected monetary value weighted by geological chance of success.')
             st.dataframe(display_table(pd.DataFrame(discovery_distribution(cos, dry, [DiscoveryCase('Small', .55, small), DiscoveryCase('Large', .45, large)]))), hide_index=True, use_container_width=True)
         with e2:
             st.markdown('### Model health & assurance')
